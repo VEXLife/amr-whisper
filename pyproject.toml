@@ -1,0 +1,12 @@
+[project]
+name = "datacastle"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "lightning>=2.4.0",
+    "pandas>=2.2.3",
+    "torch>=2.1",
+    "transformers>=4.1.0",
+]
