@@ -3,9 +3,11 @@ name = "datacastle"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.9, <3.13"
 dependencies = [
+    "ipykernel>=6.29.5",
     "lightning>=2.4.0",
+    "matplotlib>=3.9.4",
     "pandas>=2.2.3",
     "torch>=2.1",
     "transformers>=4.1.0",
