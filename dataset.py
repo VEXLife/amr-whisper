@@ -6,6 +6,8 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import torch.nn.utils.rnn as rnn_utils 
 
 def _convert_to_bin_seq_and_pad(symb_seq, symb_bits):
+    if symb_bits == 1:
+        return symb_seq # 1 bit per symbol does not need to be converted
     bin_seq = []
     for symb in symb_seq:
         try:
@@ -15,6 +17,25 @@ def _convert_to_bin_seq_and_pad(symb_seq, symb_bits):
             print(symb)
             raise ValueError("Invalid symbol sequence")
     return bin_seq
+
+def get_modulation_symb_bits(symb_type):
+    """
+    Get the number of bits per symbol for a given modulation type index.
+    1: BPSK, 2: QPSK, 3: 8PSK, 4: MSK, 5: 8QAM, 6: 16-QAM, 7: 32-QAM, 8: 8-APSK, 9: 16-APSK, 10: 32-APSK
+    """
+    match symb_type:
+        case 1 | 4:
+            return 1
+        case 2:
+            return 2
+        case 3 | 5 | 8:
+            return 3
+        case 6 | 9:
+            return 4
+        case 7 | 10:
+            return 5
+        case _:
+            raise ValueError(f"Unknown modulation type index: {symb_type}")
 
 class SignalDataset(Dataset):
     def __init__(self, data_path):
@@ -32,22 +53,7 @@ class SignalDataset(Dataset):
         symb_seq = data['Code Sequence'].dropna().astype(int).values
         symb_type = data['Modulation Type'].values[0]
         symb_wid = data['Symbol Width'].values[0]
-
-        # Convert symbol sequence to binary sequence
-        # 1：BPSK，2：QPSK，3：8PSK，4：MSK，5：8QAM，6：16-QAM，7：32-QAM，8：8-APSK，9：16-APSK，10：32-APSK
-        match symb_type:
-            case 1 | 4:
-                bin_seq = symb_seq # BPSK and MSK do not need to be converted to binary sequence
-            case 2:
-                bin_seq = _convert_to_bin_seq_and_pad(symb_seq, 2)
-            case 3 | 5 | 8:
-                bin_seq = _convert_to_bin_seq_and_pad(symb_seq, 3)
-            case 6 | 9:
-                bin_seq = _convert_to_bin_seq_and_pad(symb_seq, 4)
-            case 7 | 10:
-                bin_seq = _convert_to_bin_seq_and_pad(symb_seq, 5)
-            case _:
-                raise ValueError(f"Unknown modulation type index: {symb_type}")
+        bin_seq = _convert_to_bin_seq_and_pad(symb_seq, get_modulation_symb_bits(symb_type))
         
         iq_wave = torch.tensor(iq_wave, dtype=torch.float32)
         bin_seq = torch.tensor(bin_seq, dtype=torch.long)

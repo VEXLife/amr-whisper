@@ -1,125 +1,112 @@
-# TODO: Train code here
 import os
 import torch
-import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import pytorch_lightning as pl
+from dataset import create_dataloaders
 from model import DeepReceiver, compute_loss, filter_invalid_targets
-from tqdm import tqdm  # 进度条工具
-from dataset import create_dataloader
 
 
-def train_model(data_path, batch_size=32, num_epochs=20, learning_rate=0.001, save_path="model.pth"):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
-    # 加载数据集
-    train_loader, val_loader = create_dataloader(data_path, batch_size=batch_size, train_ratio=0.8)
+class LightningDeepReceiver(pl.LightningModule):
+    def __init__(self, num_bits=150, learning_rate=0.001):
+        super(LightningDeepReceiver, self).__init__()
+        self.model = DeepReceiver(num_bits=num_bits)
+        self.learning_rate = learning_rate
+        self.criterion = nn.CrossEntropyLoss()
 
-    model = DeepReceiver().to(device)
-    optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
+    def forward(self, x):
+        return self.model(x)
 
-    best_val_loss = float("inf")
-    for epoch in range(num_epochs):
-        print(f"\nEpoch {epoch + 1}/{num_epochs}")
-        print("-" * 30)
+    def training_step(self, batch, batch_idx):
+        iq_wave, bin_seq, symb_seq, symb_type, symb_wid = batch  # 正确解包
+        iq_wave = iq_wave.permute(0, 2, 1)  # Convert to [B, C, T] for Conv1D
+        bin_seq = bin_seq.to(self.device)  # 确保标签在正确的设备上
+        outputs = self(iq_wave)
 
-        # 训练阶段
-        model.train()
-        train_loss = 0
-        train_loader = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}")  # 使用 tqdm 显示进度条
-        for batch_idx, (iq_wave, symb_seq, symb_mask, symb_type, symb_wid) in enumerate(train_loader):
-            iq_wave = iq_wave.permute(0, 2, 1).to(device)
-            symb_seq = symb_seq.clamp(0, 1).to(device)
+        loss = compute_loss(outputs, bin_seq, ignore_index=2)  # 使用 bin_seq 作为标签，并设置 ignore_index=2
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        return loss
 
-            optimizer.zero_grad()
-            outputs = model(iq_wave)
+    def validation_step(self, batch, batch_idx):
+        iq_wave, bin_seq, symb_seq, symb_type, symb_wid = batch  # 正确解包
+        iq_wave = iq_wave.permute(0, 2, 1)
+        bin_seq = bin_seq.to(self.device)
+        outputs = self(iq_wave)
 
-            # 计算损失
-            loss = compute_loss(outputs, symb_seq)
-            loss.backward()
-            optimizer.step()
+        loss = compute_loss(outputs, bin_seq, ignore_index=2)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
 
-            # 累加损失
-            train_loss += loss.item()
+        # Accuracy calculation (optional)
+        filtered_outputs, filtered_targets = filter_invalid_targets(bin_seq, outputs, ignore_index=2)  # 使用 bin_seq
+        total_correct = 0
+        total_bits = 0
+        for output, target in zip(filtered_outputs, filtered_targets):
+            predictions = torch.argmax(F.softmax(output, dim=1), dim=1)
+            total_correct += (predictions == target).sum().item()
+            total_bits += target.numel()
+        accuracy = total_correct / total_bits if total_bits > 0 else 0
+        self.log("val_accuracy", accuracy, prog_bar=True, logger=True)
 
-            # 更新 tqdm 进度条信息
-            train_loader.set_postfix({"Batch Loss": loss.item()})
-
-        train_loss /= len(train_loader)
-        print(f"Train Loss: {train_loss:.4f}")
-
-        # 验证阶段
-        model.eval()
-        val_loss = 0
-        val_loader = tqdm(val_loader, desc="Validating")  # 使用 tqdm 显示验证进度
-        with torch.no_grad():
-            for batch_idx, (iq_wave, symb_seq, symb_mask, symb_type, symb_wid) in enumerate(val_loader):
-                iq_wave = iq_wave.permute(0, 2, 1).to(device)
-                symb_seq = symb_seq.to(device)
-                outputs = model(iq_wave)
-
-                # 计算损失
-                loss = compute_loss(outputs, symb_seq).item()
-                val_loss += loss
-
-                # 更新 tqdm 进度条信息
-                val_loader.set_postfix({"Batch Loss": loss})
-
-        val_loss /= len(val_loader)
-        print(f"Validation Loss: {val_loss:.4f}")
-
-        # 保存最佳模型
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), save_path)
-            print(f"Model saved at epoch {epoch + 1} with validation loss {val_loss:.4f}")
+    def configure_optimizers(self):
+        optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate, momentum=0.9)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+        return [optimizer], [scheduler]
 
 
-def evaluate_model(data_path, batch_size=32, model_path="model.pth"):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Lightning DataModule
+class SignalDataModule(pl.LightningDataModule):
+    def __init__(self, data_path, batch_size=32, train_ratio=0.8):
+        super(SignalDataModule, self).__init__()
+        self.data_path = data_path
+        self.batch_size = batch_size
+        self.train_ratio = train_ratio
 
-    _, val_loader = create_dataloader(data_path, batch_size=batch_size, train_ratio=0.8)
+    def setup(self, stage=None):
+        self.train_loader, self.val_loader = create_dataloaders(
+            self.data_path, batch_size=self.batch_size, train_ratio=self.train_ratio
+        )
 
-    model = DeepReceiver().to(device)
-    model.load_state_dict(torch.load(model_path))
-    model.eval()
+    def train_dataloader(self):
+        return self.train_loader
 
-    total_correct = 0
-    total_bits = 0
-    with torch.no_grad():
-        for iq_wave, symb_seq, symb_mask, symb_type, symb_wid in val_loader:
-            iq_wave = iq_wave.permute(0, 2, 1).to(device)
-            symb_seq = symb_seq.to(device)
-            outputs = model(iq_wave)
-
-            # 忽略填充值
-            filtered_outputs, filtered_targets = filter_invalid_targets(symb_seq, outputs)
-
-            for output, target in zip(filtered_outputs, filtered_targets):
-                predictions = torch.argmax(torch.softmax(output, dim=1), dim=1)
-                total_correct += (predictions == target).sum().item()
-                total_bits += target.numel()
-
-    accuracy = total_correct / total_bits
-    print(f"Validation Accuracy: {accuracy * 100:.2f}%")
+    def val_dataloader(self):
+        return self.val_loader
 
 
-
+# Training and evaluation
 if __name__ == "__main__":
-    # 获取数据路径
+    # Paths and parameters
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    print(SCRIPT_DIR)
     data_path = os.path.join(SCRIPT_DIR, "train_data")
-    print(data_path)
-
-    # 设置训练参数
     batch_size = 32
     num_epochs = 20
     learning_rate = 0.001
-    save_path = "deepreceiver_best.pth"
+    save_path = "lightning_deepreceiver_best.ckpt"
 
-    # 训练模型
-    print("start training")
-    train_model(data_path, batch_size, num_epochs, learning_rate, save_path)
-    print("end training")
-    # 评估模型
-    evaluate_model(data_path, batch_size, save_path)
+    # Initialize PyTorch Lightning model and datamodule
+    model = LightningDeepReceiver(learning_rate=learning_rate)
+    data_module = SignalDataModule(data_path, batch_size=batch_size)
+
+    # Define a Trainer
+    trainer = pl.Trainer(
+        max_epochs=num_epochs,
+        accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        devices=1 if torch.cuda.is_available() else None,
+        log_every_n_steps=20,  # 替代 progress_bar_refresh_rate
+        callbacks=[pl.callbacks.ModelCheckpoint(
+            dirpath="checkpoints",
+            filename="best_model",
+            save_top_k=1,
+            monitor="val_loss",
+            mode="min"
+        )],
+    )
+
+    # Train the model
+    print("Start training...")
+    trainer.fit(model, data_module)
+
+    # Evaluate the model
+    print("Evaluating...")
+    trainer.validate(model, datamodule=data_module)
