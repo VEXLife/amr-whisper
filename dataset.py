@@ -50,8 +50,8 @@ class SignalDataset(Dataset):
                 raise ValueError(f"Unknown modulation type index: {symb_type}")
         
         iq_wave = torch.tensor(iq_wave, dtype=torch.float32)
-        bin_seq = torch.tensor(bin_seq, dtype=torch.int8)
-        symb_seq = torch.tensor(symb_seq, dtype=torch.int8)
+        bin_seq = torch.tensor(bin_seq, dtype=torch.long)
+        symb_seq = torch.tensor(symb_seq, dtype=torch.long)
         symb_type = torch.tensor(symb_type, dtype=torch.int8)
         symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
         return iq_wave, bin_seq, symb_seq, symb_type, symb_wid

@@ -103,12 +103,12 @@ class DeepReceiver(nn.Module):
 
         return outputs
 
-def filter_invalid_targets(labels, outputs, ignore_index=-1):
+def filter_invalid_targets(labels, outputs, ignore_index=2):
     """
-    过滤目标值，忽略填充值 (-1)。
+    过滤目标值，忽略填充值 (2)。
     参数:
         labels: [batch_size, sequence_length]，目标值
-        outputs: list，包含每个位的模型输出，每个元素形状为 [batch_size, 2]
+        outputs: list，包含每个位的模型输出，每个元素形状为 [batch_size, 3]
         ignore_index: int，表示需要忽略的填充值
     返回:
         filtered_outputs: list，过滤后的有效输出
@@ -132,20 +132,20 @@ def filter_invalid_targets(labels, outputs, ignore_index=-1):
 
 
 # Loss function
-def compute_loss(outputs, labels, ignore_index=-1):
+def compute_loss(outputs, labels, ignore_index=2):  # 将 ignore_index 从 -1 改为 2
     """
-    计算损失，忽略填充值 (-1)。
+    计算损失，忽略填充值 (2)。
     参数:
-        outputs: list，每个位的模型输出，每个元素形状为 [batch_size, 2]
+        outputs: list，每个位的模型输出，每个元素形状为 [batch_size, 3]
         labels: [batch_size, sequence_length]，目标值
         ignore_index: int，表示需要忽略的填充值
     返回:
         loss: float，总损失
     """
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
     loss = 0
 
-    # 过滤掉无效的目标值
+    # 过滤掉无效的目标值（即填充值 2）
     filtered_outputs, filtered_labels = filter_invalid_targets(labels, outputs, ignore_index=ignore_index)
 
     for output, label in zip(filtered_outputs, filtered_labels):
