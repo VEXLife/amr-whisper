@@ -1,12 +1,8 @@
 import os 
 import glob
-import numpy as np
 import pandas as pd
-import itertools
-import random
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
-import torch.nn.functional as F
 import torch.nn.utils.rnn as rnn_utils 
 
 class SignalDataset(Dataset):
@@ -32,7 +28,7 @@ class SignalDataset(Dataset):
         symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
         return iq_wave, symb_seq, symb_type, symb_wid
 
-def collate_fn(train_data):
+def _collate_fn(train_data):
     iq_wave, symb_seq, symb_type, symb_wid = zip(*train_data)
     iq_wave = rnn_utils.pad_sequence(iq_wave, batch_first=True, padding_value=0)
     symb_seq = rnn_utils.pad_sequence(symb_seq, batch_first=True, padding_value=-1)
@@ -41,12 +37,23 @@ def collate_fn(train_data):
     symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
     return iq_wave, symb_seq, symb_mask, symb_type, symb_wid
 
-# Create dataset and dataloader
-def create_dataloader(data_path, batch_size=32, train_ratio=0.8):
+def create_dataloaders(data_path, batch_size=32, train_ratio=0.8):
+    """
+    Creates dataloaders from the signal dataset.
+
+    Args:
+    data_path (str): Path to the directory containing the dataset.
+    batch_size (int, optional): Number of samples per batch. Default is 32.
+    train_ratio (float, optional): Ratio of the dataset to include in the train split. Default is 0.8.
+
+    Returns:
+    train_loader (DataLoader): DataLoader for the training set.
+    val_loader (DataLoader): DataLoader for the validation set.
+    """
     dataset = SignalDataset(data_path)
     train_size = int(train_ratio * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=_collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=_collate_fn)
     return train_loader, val_loader
