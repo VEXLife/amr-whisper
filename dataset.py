@@ -60,12 +60,13 @@ class SignalDataset(Dataset):
         # Recursively find all csv files in the data_path
         self.file_list = glob.glob(os.path.join(
             data_path, '**/*.csv'), recursive=True)
+        self.data_path = data_path
 
     def __len__(self):
         return len(self.file_list)
 
     def __getitem__(self, index):
-        data = pd.read_csv(self.file_list[index], header=None, names=[
+        data = pd.read_csv(os.path.join(self.data_path, self.file_list[index]), header=None, names=[
                            'I', 'Q', 'Code Sequence', 'Modulation Type', 'Symbol Width'])
 
         iq_wave = data[['I', 'Q']].values
