@@ -5,6 +5,17 @@ import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 import torch.nn.utils.rnn as rnn_utils 
 
+def _convert_to_bin_seq_and_pad(symb_seq, symb_bits):
+    bin_seq = []
+    for symb in symb_seq:
+        try:
+            bin_seq.extend([int(bit) for bit in bin(symb)[2:].zfill(symb_bits)])
+        except:
+            print(symb_seq)
+            print(symb)
+            raise ValueError("Invalid symbol sequence")
+    return bin_seq
+
 class SignalDataset(Dataset):
     def __init__(self, data_path):
         super(SignalDataset, self).__init__()
@@ -18,24 +29,41 @@ class SignalDataset(Dataset):
         data = pd.read_csv(self.file_list[index], header=None, names=['I', 'Q', 'Code Sequence', 'Modulation Type', 'Symbol Width'])
         
         iq_wave = data[['I', 'Q']].values
-        symb_seq = data['Code Sequence'].fillna(-1).values
+        symb_seq = data['Code Sequence'].dropna().astype(int).values
         symb_type = data['Modulation Type'].values[0]
         symb_wid = data['Symbol Width'].values[0]
+
+        # Convert symbol sequence to binary sequence
+        # 1：BPSK，2：QPSK，3：8PSK，4：MSK，5：8QAM，6：16-QAM，7：32-QAM，8：8-APSK，9：16-APSK，10：32-APSK
+        match symb_type:
+            case 1 | 4:
+                bin_seq = symb_seq # BPSK and MSK do not need to be converted to binary sequence
+            case 2:
+                bin_seq = _convert_to_bin_seq_and_pad(symb_seq, 2)
+            case 3 | 5 | 8:
+                bin_seq = _convert_to_bin_seq_and_pad(symb_seq, 3)
+            case 6 | 9:
+                bin_seq = _convert_to_bin_seq_and_pad(symb_seq, 4)
+            case 7 | 10:
+                bin_seq = _convert_to_bin_seq_and_pad(symb_seq, 5)
+            case _:
+                raise ValueError(f"Unknown modulation type index: {symb_type}")
         
         iq_wave = torch.tensor(iq_wave, dtype=torch.float32)
-        symb_seq = torch.tensor(symb_seq, dtype=torch.long)
-        symb_type = torch.tensor(symb_type, dtype=torch.long)
+        bin_seq = torch.tensor(bin_seq, dtype=torch.int8)
+        symb_seq = torch.tensor(symb_seq, dtype=torch.int8)
+        symb_type = torch.tensor(symb_type, dtype=torch.int8)
         symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
-        return iq_wave, symb_seq, symb_type, symb_wid
+        return iq_wave, bin_seq, symb_seq, symb_type, symb_wid
 
 def _collate_fn(train_data):
-    iq_wave, symb_seq, symb_type, symb_wid = zip(*train_data)
+    iq_wave, bin_seq, symb_seq, symb_type, symb_wid = zip(*train_data)
     iq_wave = rnn_utils.pad_sequence(iq_wave, batch_first=True, padding_value=0)
+    bin_seq = rnn_utils.pad_sequence(bin_seq, batch_first=True, padding_value=2)
     symb_seq = rnn_utils.pad_sequence(symb_seq, batch_first=True, padding_value=-1)
-    symb_mask = (symb_seq != -1)
     symb_type = torch.tensor(symb_type, dtype=torch.long)
     symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
-    return iq_wave, symb_seq, symb_mask, symb_type, symb_wid
+    return iq_wave, bin_seq, symb_seq, symb_type, symb_wid
 
 def create_dataloaders(data_path, batch_size=32, train_ratio=0.8):
     """
