@@ -1,22 +1,29 @@
-import os 
+import os
 import glob
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
-import torch.nn.utils.rnn as rnn_utils 
+import torch.nn.utils.rnn as rnn_utils
+import lightning as L
 
-def _convert_to_bin_seq_and_pad(symb_seq, symb_bits):
+
+def recover_symb_seq_from_bin_seq(bin_seq, symb_bits):
     if symb_bits == 1:
-        return symb_seq # 1 bit per symbol does not need to be converted
+        return bin_seq  # 1 bit per symbol, no need to convert
+    symb_seq = []
+    for i in range(0, len(bin_seq), symb_bits):
+        symb_seq.append(int(''.join(map(str, bin_seq[i:i + symb_bits])), 2))
+    return symb_seq
+
+
+def convert_to_bin_seq_and_pad(symb_seq, symb_bits):
+    if symb_bits == 1:
+        return symb_seq  # 1 bit per symbol does not need to be converted
     bin_seq = []
     for symb in symb_seq:
-        try:
-            bin_seq.extend([int(bit) for bit in bin(symb)[2:].zfill(symb_bits)])
-        except:
-            print(symb_seq)
-            print(symb)
-            raise ValueError("Invalid symbol sequence")
+        bin_seq.extend([int(bit) for bit in bin(symb)[2:].zfill(symb_bits)])
     return bin_seq
+
 
 def get_modulation_symb_bits(symb_type):
     """
@@ -37,24 +44,28 @@ def get_modulation_symb_bits(symb_type):
         case _:
             raise ValueError(f"Unknown modulation type index: {symb_type}")
 
+
 class SignalDataset(Dataset):
     def __init__(self, data_path):
         super(SignalDataset, self).__init__()
         # Recursively find all csv files in the data_path
-        self.file_list = glob.glob(os.path.join(data_path, '**/*.csv'), recursive=True)
+        self.file_list = glob.glob(os.path.join(
+            data_path, '**/*.csv'), recursive=True)
 
     def __len__(self):
         return len(self.file_list)
-    
+
     def __getitem__(self, index):
-        data = pd.read_csv(self.file_list[index], header=None, names=['I', 'Q', 'Code Sequence', 'Modulation Type', 'Symbol Width'])
-        
+        data = pd.read_csv(self.file_list[index], header=None, names=[
+                           'I', 'Q', 'Code Sequence', 'Modulation Type', 'Symbol Width'])
+
         iq_wave = data[['I', 'Q']].values
         symb_seq = data['Code Sequence'].dropna().astype(int).values
         symb_type = data['Modulation Type'].values[0]
         symb_wid = data['Symbol Width'].values[0]
-        bin_seq = _convert_to_bin_seq_and_pad(symb_seq, get_modulation_symb_bits(symb_type))
-        
+        bin_seq = convert_to_bin_seq_and_pad(
+            symb_seq, get_modulation_symb_bits(symb_type))
+
         iq_wave = torch.tensor(iq_wave, dtype=torch.float32)
         bin_seq = torch.tensor(bin_seq, dtype=torch.long)
         symb_seq = torch.tensor(symb_seq, dtype=torch.long)
@@ -62,32 +73,46 @@ class SignalDataset(Dataset):
         symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
         return iq_wave, bin_seq, symb_seq, symb_type, symb_wid
 
+
 def _collate_fn(train_data):
     iq_wave, bin_seq, symb_seq, symb_type, symb_wid = zip(*train_data)
-    iq_wave = rnn_utils.pad_sequence(iq_wave, batch_first=True, padding_value=0)
-    bin_seq = rnn_utils.pad_sequence(bin_seq, batch_first=True, padding_value=2)
-    symb_seq = rnn_utils.pad_sequence(symb_seq, batch_first=True, padding_value=-1)
+    iq_wave = rnn_utils.pad_sequence(
+        iq_wave, batch_first=True, padding_value=0)
+    bin_seq = rnn_utils.pad_sequence(
+        bin_seq, batch_first=True, padding_value=2)
+    symb_seq = rnn_utils.pad_sequence(
+        symb_seq, batch_first=True, padding_value=-1)
     symb_type = torch.tensor(symb_type, dtype=torch.long)
     symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
     return iq_wave, bin_seq, symb_seq, symb_type, symb_wid
 
-def create_dataloaders(data_path, batch_size=32, train_ratio=0.8):
-    """
-    Creates dataloaders from the signal dataset.
 
-    Args:
-    data_path (str): Path to the directory containing the dataset.
-    batch_size (int, optional): Number of samples per batch. Default is 32.
-    train_ratio (float, optional): Ratio of the dataset to include in the train split. Default is 0.8.
+class SignalDataModule(L.LightningDataModule):
+    def __init__(self, data_path, batch_size=32, train_ratio=0.8, num_workers=0, collate_fn=_collate_fn):
+        super(SignalDataModule, self).__init__()
+        self.data_path = data_path
+        self.batch_size = batch_size
+        self.train_ratio = train_ratio
+        self.num_workers = num_workers
+        self.collate_fn = collate_fn
 
-    Returns:
-    train_loader (DataLoader): DataLoader for the training set.
-    val_loader (DataLoader): DataLoader for the validation set.
-    """
-    dataset = SignalDataset(data_path)
-    train_size = int(train_ratio * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=_collate_fn)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=_collate_fn)
-    return train_loader, val_loader
+    def setup(self, stage=None):
+        dataset = SignalDataset(self.data_path)
+        train_size = int(self.train_ratio * len(dataset))
+        val_size = len(dataset) - train_size
+        self.train_dataset, self.val_dataset = random_split(
+            dataset, [train_size, val_size])
+
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset,
+                          batch_size=self.batch_size,
+                          shuffle=True,
+                          num_workers=self.num_workers,
+                          collate_fn=self.collate_fn)
+
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset,
+                          batch_size=self.batch_size,
+                          shuffle=False,
+                          num_workers=self.num_workers,
+                          collate_fn=self.collate_fn)

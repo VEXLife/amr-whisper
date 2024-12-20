@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import lightning as L
-from dataset import get_modulation_symb_bits
+from dataset import get_modulation_symb_bits, recover_symb_seq_from_bin_seq
 
 class BasicBlock(nn.Module):
     def __init__(self, in_channels, growth_rate):
@@ -97,7 +97,7 @@ class DenseNet(nn.Module):
         return features
     
 class LitDenseNet(L.LightningModule):
-    def __init__(self, num_feats=150):
+    def __init__(self, num_feats=150, lr=1e-3):
         super(LitDenseNet, self).__init__()
         self.encoder = DenseNet(num_feats)
 
@@ -109,15 +109,20 @@ class LitDenseNet(L.LightningModule):
 
         # Output layers for symbol width regressor
         self.symbol_width_regressor = nn.Linear(num_feats * 2, 1)
+
+        self.lr = lr
+
+        self.save_hyperparameters("num_feats", "lr")
         
     def training_step(self, batch, batch_idx):
-        iq_wave_batch, bin_seq_batch, symb_seq_batch, symb_type_batch, symb_wid_batch = batch
+        iq_wave_batch, bin_seq_batch, _, symb_type_batch, symb_wid_batch = batch
         features = self.encoder(iq_wave_batch)
 
         # Binary classification for each bit
         output_bits_logits = []
         for classifier in self.binary_classifiers:
             output_bits_logits.append(classifier(features))
+        output_bits_logits = torch.stack(output_bits_logits, dim=0)
 
         # symb_type classification
         symb_type_logits = self.symb_type_classifier(features)
@@ -136,16 +141,20 @@ class LitDenseNet(L.LightningModule):
         return loss
     
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        iq_wave_batch, bin_seq_batch, symb_seq_batch, symb_type_batch, symb_wid_batch = batch
+        iq_wave_batch = batch
         features = self.encoder(iq_wave_batch)
 
         # Binary classification for each bit
-        output_bits = []
-        for classifier in self.binary_classifiers:
-            bit = torch.argmax(classifier(features), dim=1)
-            if bit == 2:
-                break
-            output_bits.append(bit)
+        batch_size = iq_wave_batch.size(0)
+        output_bits_hat = []
+        for i in range(batch_size):
+            output_bits = []
+            for classifier in self.binary_classifiers:
+                bit = torch.argmax(classifier(features[i].unsqueeze(0)), dim=1)
+                if bit == 2:
+                    break
+                output_bits.append(bit)
+            output_bits_hat.append(output_bits)
 
         # Symbol modulation type classification
         symb_type = torch.argmax(self.symb_type_classifier(features), dim=1)
@@ -155,8 +164,8 @@ class LitDenseNet(L.LightningModule):
         return output_bits, symb_type, symbol_width
 
     def validation_step(self, batch, batch_idx):
-        _, _, symb_seq_batch, symb_type_batch, symb_wid_batch = batch
-        output_bits_hat, symb_type_hat, symbol_width_hat = self.predict_step(batch, batch_idx)
+        iq_wave_batch, _, symb_seq_batch, symb_type_batch, symb_wid_batch = batch
+        output_bits_hat, symb_type_hat, symbol_width_hat = self.predict_step(iq_wave_batch, batch_idx)
         batch_size = symb_seq_batch.size(0)
 
         mt_score = (symb_type_hat == symb_type_batch).float().mean() * 100
@@ -168,19 +177,14 @@ class LitDenseNet(L.LightningModule):
 
         cq = 0
         for i in range(batch_size):
-            symb_seq = _recover_symb_seq_from_bin_seq(output_bits_hat[i], get_modulation_symb_bits(symb_type_batch[i]))
+            symb_seq = recover_symb_seq_from_bin_seq(output_bits_hat[i], get_modulation_symb_bits(symb_type_batch[i]))
             cs = torch.cosine_similarity(torch.tensor(symb_seq), symb_seq_batch[i])
             cq += torch.clip((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
         self.log('val/cq_score', cq)
+
+        score = 0.2 * mt_score + 0.3 * sw_score + 0.5 * cq
+        self.log('val/score', score)
     
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
-
-def _recover_symb_seq_from_bin_seq(bin_seq, symb_bits):
-    if symb_bits == 1:
-        return bin_seq # 1 bit per symbol, no need to convert
-    symb_seq = []
-    for i in range(0, len(bin_seq), symb_bits):
-        symb_seq.append(int(''.join(map(str, bin_seq[i:i + symb_bits])), 2))
-    return symb_seq
