@@ -97,12 +97,12 @@ class DenseNet(nn.Module):
         return features
     
 class LitDenseNet(L.LightningModule):
-    def __init__(self, num_feats=150, lr=1e-3):
+    def __init__(self, num_feats=150, lr=1e-3, max_bits=32):
         super(LitDenseNet, self).__init__()
         self.encoder = DenseNet(num_feats)
 
         # Output layers for binary classifiers
-        self.binary_classifiers = nn.ModuleList([nn.Linear(num_feats * 2, 3) for _ in range(num_feats)])
+        self.binary_classifiers = nn.ModuleList([nn.Linear(num_feats * 2, 3) for _ in range(max_bits)])
 
         # Output layers for symb_type classifier
         self.symb_type_classifier = nn.Linear(num_feats * 2, 10)
@@ -111,6 +111,7 @@ class LitDenseNet(L.LightningModule):
         self.symbol_width_regressor = nn.Linear(num_feats * 2, 1)
 
         self.lr = lr
+        self.max_bits = max_bits
 
         self.save_hyperparameters("num_feats", "lr")
         
@@ -123,6 +124,7 @@ class LitDenseNet(L.LightningModule):
         for classifier in self.binary_classifiers:
             output_bits_logits.append(classifier(features))
         output_bits_logits = torch.stack(output_bits_logits, dim=0)
+        output_bits_logits = output_bits_logits.permute(1, 2, 0) # (batch, 3, max_bits)
 
         # symb_type classification
         symb_type_logits = self.symb_type_classifier(features)
@@ -130,9 +132,9 @@ class LitDenseNet(L.LightningModule):
         # Symbol width regression
         symbol_width_logits = self.symbol_width_regressor(features)
         
-        seq_loss = F.cross_entropy(output_bits_logits, bin_seq_batch)
-        symb_type_loss = F.cross_entropy(symb_type_logits, symb_type_batch)
-        width_loss = F.mse_loss(symbol_width_logits, symb_wid_batch)
+        seq_loss = F.cross_entropy(output_bits_logits, bin_seq_batch[:, :self.max_bits])
+        symb_type_loss = F.cross_entropy(symb_type_logits, symb_type_batch - 1)
+        width_loss = F.mse_loss(symbol_width_logits, symb_wid_batch.unsqueeze(1))
         loss = seq_loss + symb_type_loss + width_loss
         self.log('train/seq_loss', seq_loss)
         self.log('train/type_loss', symb_type_loss)
@@ -152,7 +154,10 @@ class LitDenseNet(L.LightningModule):
             for classifier in self.binary_classifiers:
                 bit = torch.argmax(classifier(features[i].unsqueeze(0)), dim=1)
                 if bit == 2:
-                    break
+                    if len(output_bits) == 0:
+                        continue
+                    else:
+                        break
                 output_bits.append(bit)
             output_bits_hat.append(output_bits)
 
@@ -161,14 +166,14 @@ class LitDenseNet(L.LightningModule):
 
         # Symbol width regression
         symbol_width = self.symbol_width_regressor(features)
-        return output_bits, symb_type, symbol_width
+        return output_bits_hat, symb_type, symbol_width
 
     def validation_step(self, batch, batch_idx):
         iq_wave_batch, _, symb_seq_batch, symb_type_batch, symb_wid_batch = batch
         output_bits_hat, symb_type_hat, symbol_width_hat = self.predict_step(iq_wave_batch, batch_idx)
         batch_size = symb_seq_batch.size(0)
 
-        mt_score = (symb_type_hat == symb_type_batch).float().mean() * 100
+        mt_score = (symb_type_hat == symb_type_batch - 1).float().mean() * 100
         self.log('val/mt_score', mt_score)
 
         er = torch.abs((symb_wid_batch - symbol_width_hat) / symb_wid_batch)
@@ -177,8 +182,21 @@ class LitDenseNet(L.LightningModule):
 
         cq = 0
         for i in range(batch_size):
-            symb_seq = recover_symb_seq_from_bin_seq(output_bits_hat[i], get_modulation_symb_bits(symb_type_batch[i]))
-            cs = torch.cosine_similarity(torch.tensor(symb_seq), symb_seq_batch[i])
+            symb_seq_hat = recover_symb_seq_from_bin_seq(output_bits_hat[i], get_modulation_symb_bits(symb_type_batch[i]))
+            # Remove -1 elements from the ground truth
+            symb_seq_ground_truth = symb_seq_batch[i][symb_seq_batch[i] != -1]
+            symb_seq_ground_truth_len = symb_seq_ground_truth.numel()
+            symb_seq_hat_len = symb_seq_hat.numel()
+
+            if symb_seq_ground_truth_len == 0 or symb_seq_hat_len == 0:
+                continue
+            if symb_seq_ground_truth_len < symb_seq_hat_len:
+                # Slice the predicted symbol sequence to the same length as the ground truth
+                symb_seq_hat = symb_seq_hat[0, :symb_seq_ground_truth_len]
+            else:
+                # Pad the symbol sequence to the same length as the ground truth
+                symb_seq_hat = torch.cat([symb_seq_hat, torch.zeros(1, symb_seq_ground_truth_len - symb_seq_hat_len)], dim=1)
+            cs = torch.cosine_similarity(symb_seq_hat.float(), symb_seq_ground_truth.float().unsqueeze(0))
             cq += torch.clip((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
         self.log('val/cq_score', cq)
 

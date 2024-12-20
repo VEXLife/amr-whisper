@@ -7,13 +7,22 @@ import torch.nn.utils.rnn as rnn_utils
 import lightning as L
 
 
-def recover_symb_seq_from_bin_seq(bin_seq, symb_bits):
+def recover_symb_seq_from_bin_seq(bin_seq: list[torch.LongTensor], symb_bits: int) -> torch.LongTensor:
     if symb_bits == 1:
-        return bin_seq  # 1 bit per symbol, no need to convert
-    symb_seq = []
-    for i in range(0, len(bin_seq), symb_bits):
-        symb_seq.append(int(''.join(map(str, bin_seq[i:i + symb_bits])), 2))
-    return symb_seq
+        return torch.Tensor(bin_seq).unsqueeze(0)  # 1 bit per symbol, no need to convert
+    
+    if len(bin_seq) == 0:
+        return torch.Tensor(0)  # Empty sequence, no need to convert
+    
+    # Pad the binary sequence to the nearest multiple of symb_bits
+    pad_len = symb_bits - len(bin_seq) % symb_bits
+    bin_seq = bin_seq + [torch.LongTensor([0])] * pad_len
+
+    # Convert to symbol sequence
+    multipliers = 2 ** torch.arange(symb_bits - 1, -1, -1).unsqueeze(0)
+    bin_seq_mat = torch.stack(bin_seq).reshape(-1, symb_bits)
+    symb_seq = torch.matmul(bin_seq_mat, multipliers.T).T # A two-dimensional tensor
+    return symb_seq # Shape: (1, symb_seq_len)
 
 
 def convert_to_bin_seq_and_pad(symb_seq, symb_bits):
@@ -84,6 +93,7 @@ def _collate_fn(train_data):
         symb_seq, batch_first=True, padding_value=-1)
     symb_type = torch.tensor(symb_type, dtype=torch.long)
     symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
+    iq_wave = torch.permute(iq_wave, [0, 2, 1])
     return iq_wave, bin_seq, symb_seq, symb_type, symb_wid
 
 
