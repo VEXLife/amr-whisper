@@ -3,12 +3,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import pytorch_lightning as pl
+from lightning import LightningModule, Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint
 from dataset import create_dataloaders
 from model import DeepReceiver, compute_loss, filter_invalid_targets
 
 
-class LightningDeepReceiver(pl.LightningModule):
+class LightningDeepReceiver(LightningModule):
     def __init__(self, num_bits=150, learning_rate=0.001):
         super(LightningDeepReceiver, self).__init__()
         self.model = DeepReceiver(num_bits=num_bits)
@@ -54,10 +55,8 @@ class LightningDeepReceiver(pl.LightningModule):
         return [optimizer], [scheduler]
 
 
-# Lightning DataModule
-class SignalDataModule(pl.LightningDataModule):
+class SignalDataModule:
     def __init__(self, data_path, batch_size=32, train_ratio=0.8):
-        super(SignalDataModule, self).__init__()
         self.data_path = data_path
         self.batch_size = batch_size
         self.train_ratio = train_ratio
@@ -74,7 +73,6 @@ class SignalDataModule(pl.LightningDataModule):
         return self.val_loader
 
 
-# Training and evaluation
 if __name__ == "__main__":
     # Paths and parameters
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -84,29 +82,32 @@ if __name__ == "__main__":
     learning_rate = 0.001
     save_path = "lightning_deepreceiver_best.ckpt"
 
-    # Initialize PyTorch Lightning model and datamodule
+    # Initialize Lightning model and datamodule
     model = LightningDeepReceiver(learning_rate=learning_rate)
     data_module = SignalDataModule(data_path, batch_size=batch_size)
+    data_module.setup()
 
     # Define a Trainer
-    trainer = pl.Trainer(
+    trainer = Trainer(
         max_epochs=num_epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1 if torch.cuda.is_available() else None,
-        log_every_n_steps=20,  # 替代 progress_bar_refresh_rate
-        callbacks=[pl.callbacks.ModelCheckpoint(
-            dirpath="checkpoints",
-            filename="best_model",
-            save_top_k=1,
-            monitor="val_loss",
-            mode="min"
-        )],
+        log_every_n_steps=20,
+        callbacks=[
+            ModelCheckpoint(
+                dirpath="checkpoints",
+                filename="best_model",
+                save_top_k=1,
+                monitor="val_loss",
+                mode="min"
+            )
+        ],
     )
 
     # Train the model
     print("Start training...")
-    trainer.fit(model, data_module)
+    trainer.fit(model, train_dataloaders=data_module.train_dataloader(), val_dataloaders=data_module.val_dataloader())
 
     # Evaluate the model
     print("Evaluating...")
-    trainer.validate(model, datamodule=data_module)
+    trainer.validate(model, dataloaders=data_module.val_dataloader())
