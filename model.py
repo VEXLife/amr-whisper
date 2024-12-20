@@ -67,7 +67,7 @@ class DeepReceiver(nn.Module):
         self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
 
         # Output layers for binary classifiers
-        self.binary_classifiers = nn.ModuleList([nn.Linear(num_bits * 2, 2) for _ in range(num_bits)])
+        self.binary_classifiers = nn.ModuleList([nn.Linear(num_bits * 2, 3) for _ in range(num_bits)])
 
     def forward(self, x):
         # Initial convolution
