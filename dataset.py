@@ -14,11 +14,15 @@ class SignalDataset(Dataset):
         super(SignalDataset, self).__init__()
         # Recursively find all csv files in the data_path
         self.file_list = glob.glob(os.path.join(data_path, '**/*.csv'), recursive=True)
+        self.cache = {}  # Dictionary for caching data
 
     def __len__(self):
         return len(self.file_list)
     
     def __getitem__(self, index):
+        if index in self.cache:
+            return self.cache[index]
+        
         data = pd.read_csv(self.file_list[index], header=None, names=['I', 'Q', 'Code Sequence', 'Modulation Type', 'Symbol Width'])
         
         iq_wave = data[['I', 'Q']].values
@@ -30,6 +34,9 @@ class SignalDataset(Dataset):
         symb_seq = torch.tensor(symb_seq, dtype=torch.long)
         symb_type = torch.tensor(symb_type, dtype=torch.long)
         symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
+        # Cache processed data
+        self.cache[index] = (iq_wave, symb_seq, symb_type, symb_wid)
+
         return iq_wave, symb_seq, symb_type, symb_wid
 
 def collate_fn(train_data):
