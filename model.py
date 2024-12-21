@@ -121,7 +121,7 @@ class LitDenseNet(L.LightningModule):
         self.lr = lr
         self.max_bits = max_bits
 
-        self.save_hyperparameters("num_feats", "lr")
+        self.save_hyperparameters("num_feats", "lr", "max_bits")
 
     def training_step(self, batch, batch_idx):
         iq_wave_batch, bin_seq_batch, _, symb_type_batch, symb_wid_batch = batch
