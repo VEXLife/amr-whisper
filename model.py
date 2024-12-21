@@ -1,14 +1,19 @@
-# TODO: Model declarations here
+import lightning as L
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange, reduce
+
+from dataset import get_modulation_symb_bits, recover_symb_seq_from_bin_seq
+
 
 class BasicBlock(nn.Module):
     def __init__(self, in_channels, growth_rate):
         super(BasicBlock, self).__init__()
         self.bn = nn.BatchNorm1d(in_channels)
         self.relu = nn.ReLU()
-        self.conv = nn.Conv1d(in_channels, growth_rate, kernel_size=5, padding=2)
+        self.conv = nn.Conv1d(in_channels, growth_rate,
+                              kernel_size=5, padding=2)
 
     def forward(self, x):
         out = self.conv(self.relu(self.bn(x)))
@@ -21,7 +26,8 @@ class TransitionBlock(nn.Module):
         super(TransitionBlock, self).__init__()
         self.bn = nn.BatchNorm1d(in_channels)
         self.relu = nn.ReLU()
-        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size=5, padding=2)
+        self.conv = nn.Conv1d(in_channels, out_channels,
+                              kernel_size=5, padding=2)
         self.pool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
 
     def forward(self, x):
@@ -42,10 +48,11 @@ class DenseBlock(nn.Module):
         return x
 
 
-class DeepReceiver(nn.Module):
-    def __init__(self, num_bits=150):
-        super(DeepReceiver, self).__init__()
-        self.initial_conv = nn.Conv1d(2, 64, kernel_size=5, padding=2)  # Input has 2 channels (Re, Im)
+class DenseNet(nn.Module):
+    def __init__(self, num_feats=150):
+        super(DenseNet, self).__init__()
+        # Input has 2 channels (Re, Im)
+        self.initial_conv = nn.Conv1d(2, 64, kernel_size=5, padding=2)
 
         # Define DenseNet structure
         self.transition1 = TransitionBlock(64, 128)
@@ -60,14 +67,12 @@ class DeepReceiver(nn.Module):
         self.transition4 = TransitionBlock(64 + 4 * 64, 64)
         self.dense4 = DenseBlock(3, 64, 64)
 
-        self.final_conv = nn.Conv1d(64 + 3 * 64, num_bits, kernel_size=5, padding=2)
+        self.final_conv = nn.Conv1d(
+            64 + 3 * 64, num_feats, kernel_size=5, padding=2)
 
         # Global Pooling layers
         self.global_max_pool = nn.AdaptiveMaxPool1d(1)
         self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
-
-        # Output layers for binary classifiers
-        self.binary_classifiers = nn.ModuleList([nn.Linear(num_bits * 2, 2) for _ in range(num_bits)])
 
     def forward(self, x):
         # Initial convolution
@@ -96,87 +101,124 @@ class DeepReceiver(nn.Module):
         # Concatenate pooling results
         features = torch.cat([max_pooled, avg_pooled], dim=1)
 
+        return features
+
+
+class LitDenseNet(L.LightningModule):
+    def __init__(self, num_feats=150, lr=1e-3, max_bits=32):
+        super(LitDenseNet, self).__init__()
+        self.encoder = DenseNet(num_feats)
+
+        # Output layers for binary classifier
+        self.binary_classifier = nn.Linear(num_feats * 2, max_bits * 3)
+
+        # Output layers for symb_type classifier
+        self.symb_type_classifier = nn.Linear(num_feats * 2, 10)
+
+        # Output layers for symbol width regressor
+        self.symbol_width_regressor = nn.Linear(num_feats * 2, 1)
+
+        self.lr = lr
+        self.max_bits = max_bits
+
+        self.save_hyperparameters("num_feats", "lr")
+
+    def training_step(self, batch, batch_idx):
+        iq_wave_batch, bin_seq_batch, _, symb_type_batch, symb_wid_batch = batch
+        features = self.encoder(iq_wave_batch)
+
         # Binary classification for each bit
-        outputs = []
-        for classifier in self.binary_classifiers:
-            outputs.append(classifier(features))
+        output_bits_logits = self.binary_classifier(features)
+        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=3)
 
-        return outputs
+        # symb_type classification
+        symb_type_logits = self.symb_type_classifier(features)
 
-def filter_invalid_targets(labels, outputs, ignore_index=-1):
-    """
-    过滤目标值，忽略填充值 (-1)。
-    参数:
-        labels: [batch_size, sequence_length]，目标值
-        outputs: list，包含每个位的模型输出，每个元素形状为 [batch_size, 2]
-        ignore_index: int，表示需要忽略的填充值
-    返回:
-        filtered_outputs: list，过滤后的有效输出
-        filtered_targets: list，过滤后的有效目标值
-    """
-    valid_mask = labels != ignore_index  # 创建有效掩码
-    filtered_outputs = []
-    filtered_targets = []
+        # Symbol width regression
+        symbol_width_logits = self.symbol_width_regressor(features)
 
-    for i, output in enumerate(outputs):  # 遍历每个位的输出
-        target = labels[:, i]  # 当前位的目标值
-        valid_output = output[valid_mask[:, i]]  # 应用掩码过滤无效输出
-        valid_target = target[valid_mask[:, i]]  # 应用掩码过滤无效目标
+        # Pad binary sequence to match output size
+        assert bin_seq_batch.size(1) <= self.max_bits, f"Binary sequence length {bin_seq_batch.size(1)} is greater than max_bits {self.max_bits}"
+        bin_seq_batch = F.pad(
+            bin_seq_batch, (0, self.max_bits - bin_seq_batch.size(1)), "constant", 2)
+        seq_loss = F.cross_entropy(output_bits_logits, bin_seq_batch)
+        symb_type_loss = F.cross_entropy(symb_type_logits, symb_type_batch - 1)
+        width_loss = F.mse_loss(symbol_width_logits,
+                                symb_wid_batch.unsqueeze(1))
+        loss = seq_loss + symb_type_loss + width_loss
+        self.log('train/seq_loss', seq_loss)
+        self.log('train/type_loss', symb_type_loss)
+        self.log('train/width_loss', width_loss)
+        self.log('train/loss', loss)
+        return loss
 
-        if valid_output.shape[0] > 0:  # 如果存在有效值
-            filtered_outputs.append(valid_output)
-            filtered_targets.append(valid_target)
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        iq_wave_batch = batch
+        features = self.encoder(iq_wave_batch)
 
-    return filtered_outputs, filtered_targets
+        # Binary classification for each bit
+        output_bits_logits = self.binary_classifier(features)        
+        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=3)
+        output_bits = torch.argmax(output_bits_logits, dim=1)
+        batch_size = iq_wave_batch.size(0)
+        output_bits_hat = []
+        for i in range(batch_size):
+            output_bits_hat.append(output_bits[i][output_bits[i] != 2])
 
+        # Symbol modulation type classification
+        symb_type = torch.argmax(self.symb_type_classifier(features), dim=1)
 
+        # Symbol width regression
+        symbol_width = self.symbol_width_regressor(features)
+        return output_bits_hat, symb_type, symbol_width
 
-# Loss function
-def compute_loss(outputs, labels, ignore_index=-1):
-    """
-    计算损失，忽略填充值 (-1)。
-    参数:
-        outputs: list，每个位的模型输出，每个元素形状为 [batch_size, 2]
-        labels: [batch_size, sequence_length]，目标值
-        ignore_index: int，表示需要忽略的填充值
-    返回:
-        loss: float，总损失
-    """
-    criterion = nn.CrossEntropyLoss()
-    loss = 0
+    def validation_step(self, batch, batch_idx):
+        iq_wave_batch, _, symb_seq_batch, symb_type_batch, symb_wid_batch = batch
+        features = self.encoder(iq_wave_batch)
 
-    # 过滤掉无效的目标值
-    filtered_outputs, filtered_labels = filter_invalid_targets(labels, outputs, ignore_index=ignore_index)
+        # Binary classification for each bit
+        output_bits_hat, symb_type_hat, symbol_width_hat = self.predict_step(
+            iq_wave_batch, batch_idx
+        )
+        batch_size = symb_seq_batch.size(0)
 
-    for output, label in zip(filtered_outputs, filtered_labels):
-        loss += criterion(output, label)  # 计算损失
-    
-    return loss
+        mt_score = (symb_type_hat == symb_type_batch - 1).float().mean() * 100
+        self.log('val/mt_score', mt_score)
 
+        er = torch.abs((symb_wid_batch - symbol_width_hat.T) / symb_wid_batch)
+        sw_score = torch.clamp(100 - (er - 0.05) / 0.15 * 100, 0, 100).mean()
+        self.log('val/sw_score', sw_score)
 
+        cq = 0
+        device = features.device  # Get the device from features
 
-# Training step
-def train_step(model, data_loader, optimizer):
-    model.train()
-    total_loss = 0
-    for iq_signals, labels in data_loader:
-        iq_signals, labels = iq_signals.cuda(), labels.cuda()
-        optimizer.zero_grad()
-        outputs = model(iq_signals)
-        loss = compute_loss(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-    return total_loss / len(data_loader)
+        for i in range(batch_size):
+            # Ensure symb_type_batch[i] is on CPU to get the item, then use the device for tensors
+            symb_type_val = symb_type_batch[i].item()
+            symb_seq_hat = recover_symb_seq_from_bin_seq(
+                output_bits_hat[i], 
+                get_modulation_symb_bits(symb_type_val), 
+                device
+            )
 
+            # Remove -1 elements from the ground truth
+            symb_seq_ground_truth = symb_seq_batch[i][symb_seq_batch[i] != -1]
+            symb_seq_ground_truth_len = symb_seq_ground_truth.numel()
+            symb_seq_hat_len = symb_seq_hat.numel()
 
-# Inference step
-def inference(model, iq_signals):
-    model.eval()
-    iq_signals = iq_signals.cuda()
-    with torch.no_grad():
-        outputs = model(iq_signals)
-        predictions = []
-        for output in outputs:
-            predictions.append(torch.argmax(F.softmax(output, dim=1), dim=1))
-    return torch.stack(predictions, dim=1)
+            if symb_seq_ground_truth_len == 0 or symb_seq_hat_len == 0:
+                continue
+            symb_seq_hat = F.pad(symb_seq_hat, (0, symb_seq_ground_truth_len - symb_seq_hat_len), "constant", 0)
+
+            cs = torch.cosine_similarity(
+                symb_seq_hat.float(), symb_seq_ground_truth.float().unsqueeze(0)
+            )
+            cq += torch.clamp((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
+        self.log('val/cq_score', cq)
+
+        score = 0.2 * mt_score + 0.3 * sw_score + 0.5 * cq
+        self.log('val/score', score)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        return optimizer

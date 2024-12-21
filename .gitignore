@@ -12,3 +12,6 @@ wheels/
 *.lock
 train_data/
 *logs
+launch*
+*.zip
+*.ckpt
