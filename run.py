@@ -35,7 +35,6 @@ def main(to_pred_dir, result_save_path):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = LitDenseNet.load_from_checkpoint(
         'checkpoints/end-epoch=0.ckpt',
-        max_bits=2000  # 替换为训练时的 max_bits 值
     )
     model.eval().to(device)
 
