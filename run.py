@@ -1,8 +1,4 @@
 # 运行输入python run.py ./test_data ./result.csv
-# 在model = LitDenseNet.load_from_checkpoint(
-#       'checkpoints/end-epoch=0.ckpt',
-#       max_bits=2000
-#   )修改ckpt文件
 import os
 import sys
 import pandas as pd
@@ -31,20 +27,19 @@ def main(to_pred_dir, result_save_path):
 
     # 加载模型
     model = LitDenseNet.load_from_checkpoint(
-        'checkpoints/end-epoch=0.ckpt'
+        'best.ckpt'
     )
     model.eval()
 
     # 使用 SignalDataModule 加载测试数据
     data_module = SignalDataModule(
         data_path=testpath,
-        batch_size=256,  # 根据需求调整 batch size
-        train_ratio=0,  # 预测时无需划分训练集
-        num_workers=31
+        batch_size=32,  # 根据需求调整 batch size
+        num_workers=3
     )
 
     # 初始化 Trainer
-    trainer = L.Trainer(accelerator="auto", devices=1)
+    trainer = L.Trainer()
 
     # 使用 Trainer 的 predict 方法进行预测
     predictions = trainer.predict(model, datamodule=data_module)
@@ -64,7 +59,7 @@ def main(to_pred_dir, result_save_path):
             code_sequence_str = ' '.join(map(str, code_sequence.squeeze(0).numpy().astype(int)))
 
             # 添加结果到列表
-            result.append(f"{filename},{modulation_type},{symbol_width},{code_sequence_str}")
+            result.append(f"{filename},{modulation_type},{symbol_width: .2f},{code_sequence_str}")
 
 
     # 将预测结果保存到 result_save_path
