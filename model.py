@@ -185,9 +185,8 @@ class LitDenseNet(L.LightningModule):
         sw_score = torch.clamp(100 - (er - 0.05) / 0.15 * 100, 0, 100).mean()
         self.log('val/sw_score', sw_score)
 
-        cq = 0
+        cq_score = 0
         device = features.device  # Get the device from features
-
         for i in range(batch_size):
             # Ensure symb_type_batch[i] is on CPU to get the item, then use the device for tensors
             symb_type_val = symb_type_batch[i].item()
@@ -209,10 +208,10 @@ class LitDenseNet(L.LightningModule):
             cs = torch.cosine_similarity(
                 symb_seq_hat.float(), symb_seq_ground_truth.float().unsqueeze(0)
             )
-            cq += torch.clamp((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
-        self.log('val/cq_score', cq)
+            cq_score += torch.clamp((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
+        self.log('val/cq_score', cq_score)
 
-        score = 0.2 * mt_score + 0.3 * sw_score + 0.5 * cq
+        score = 0.2 * mt_score + 0.3 * sw_score + 0.5 * cq_score
         self.log('val/score', score)
 
     def configure_optimizers(self):
