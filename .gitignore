@@ -13,3 +13,5 @@ wheels/
 train_data/
 *logs
 launch*
+*.zip
+*.ckpt

@@ -191,7 +191,7 @@ class LitDenseNet(L.LightningModule):
         mt_score = (symb_type_hat == symb_type_batch - 1).float().mean() * 100
         self.log('val/mt_score', mt_score)
 
-        er = torch.abs((symb_wid_batch - symbol_width_hat) / symb_wid_batch)
+        er = torch.abs((symb_wid_batch - symbol_width_hat.T) / symb_wid_batch)
         sw_score = torch.clamp(100 - (er - 0.05) / 0.15 * 100, 0, 100).mean()
         self.log('val/sw_score', sw_score)
 
@@ -212,7 +212,7 @@ class LitDenseNet(L.LightningModule):
 
             if symb_seq_ground_truth_len == 0 or symb_seq_hat_len == 0:
                 continue
-            if symb_seq_ground_truth_len < symb_seq_hat_len:
+            if symb_seq_ground_truth_len <= symb_seq_hat_len:
                 # Slice the predicted symbol sequence to the same length as the ground truth
                 symb_seq_hat = symb_seq_hat[0, :symb_seq_ground_truth_len]
             else:
