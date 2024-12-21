@@ -31,8 +31,7 @@ def main(to_pred_dir, result_save_path):
 
     # 加载模型
     model = LitDenseNet.load_from_checkpoint(
-        'checkpoints/end-epoch=0.ckpt',  # 模型路径
-        max_bits=2000  # 替换为训练时的 max_bits
+        'checkpoints/end-epoch=0.ckpt'
     )
     model.eval()
 
