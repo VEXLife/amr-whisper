@@ -1,19 +1,22 @@
-import os
 import glob
+import os
+
+import lightning as L
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
+import torch.nn.functional as F
 import torch.nn.utils.rnn as rnn_utils
-import lightning as L
+from einops import rearrange
+from torch.utils.data import DataLoader, Dataset, random_split
 
-multipliers_full_5bits = (2 ** torch.arange(4, -1, -1)).float().unsqueeze(0)
+multipliers_full_5bits = (2 ** torch.arange(4, -1, -1)).float().unsqueeze(1)  # Shape: (5, 1)
 
-def recover_symb_seq_from_bin_seq(bin_seq: list[torch.LongTensor], symb_bits: int, device: torch.device) -> torch.FloatTensor:
+def recover_symb_seq_from_bin_seq(bin_seq: torch.LongTensor, symb_bits: int, device: torch.device) -> torch.FloatTensor:
     """
     Recover symbol sequence from binary sequence.
 
     Args:
-        bin_seq (list[torch.LongTensor]): List of binary tensors.
+        bin_seq (torch.LongTensor): A binary sequence tensor
         symb_bits (int): Number of bits per symbol.
         device (torch.device): Device to place the tensors on.
 
@@ -21,7 +24,7 @@ def recover_symb_seq_from_bin_seq(bin_seq: list[torch.LongTensor], symb_bits: in
         torch.FloatTensor: Recovered symbol sequence tensor of shape (1, symb_seq_len).
     """
     if symb_bits == 1:
-        return torch.tensor(bin_seq, dtype=torch.float32, device=device).unsqueeze(0)  # Shape: (1, len(bin_seq))
+        return rearrange(bin_seq, 's -> 1 s')
     
     if len(bin_seq) == 0:
         return torch.tensor([], dtype=torch.float32, device=device)  # Empty tensor on the correct device
@@ -30,18 +33,16 @@ def recover_symb_seq_from_bin_seq(bin_seq: list[torch.LongTensor], symb_bits: in
     remaining_bits_count = len(bin_seq) % symb_bits
     pad_len = symb_bits - remaining_bits_count if remaining_bits_count != 0 else 0
     if pad_len > 0:
-        # Ensure the padding tensors are on the correct device and of type Long
-        padding = [torch.tensor([0], dtype=torch.long, device=device) for _ in range(pad_len)]
-        bin_seq = bin_seq + padding  # Pad on the correct device
+        bin_seq = F.pad(bin_seq, (0, pad_len), 'constant', 0)
     
     # Convert to symbol sequence
-    multipliers = multipliers_full_5bits[:, :symb_bits].to(device)  # Shape: (1, symb_bits)
+    multipliers = multipliers_full_5bits[:symb_bits, :].to(device)  # Shape: (1, symb_bits)
     
     # Ensure that bin_seq_mat is of type float32 for the matrix multiplication
-    bin_seq_mat = torch.stack(bin_seq).to(torch.float32).reshape(-1, symb_bits)  # Shape: (num_symbols, symb_bits)
+    bin_seq_mat = rearrange(bin_seq, '(l symb_bits) -> l symb_bits', symb_bits=symb_bits).float()
     
     # Perform matrix multiplication to convert binary to symbol
-    symb_seq = torch.matmul(bin_seq_mat, multipliers.T).T  # Shape: (1, num_symbols)
+    symb_seq = torch.matmul(bin_seq_mat, multipliers).T  # Shape: (num_symbols, 1)
     
     return symb_seq  # Shape: (1, num_symbols)
 
@@ -114,7 +115,7 @@ def _collate_fn(train_data):
         symb_seq, batch_first=True, padding_value=-1)
     symb_type = torch.tensor(symb_type, dtype=torch.long)
     symb_wid = torch.tensor(symb_wid, dtype=torch.float32)
-    iq_wave = torch.permute(iq_wave, [0, 2, 1])
+    iq_wave = rearrange(iq_wave, 'b t c -> b c t')
     return iq_wave, bin_seq, symb_seq, symb_type, symb_wid
 
 

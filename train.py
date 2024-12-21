@@ -1,9 +1,11 @@
 import fire
 import lightning as L
-from lightning.pytorch.loggers import WandbLogger, CSVLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import CSVLogger, WandbLogger
+
 from dataset import SignalDataModule
 from model import LitDenseNet
+
 
 def train(*, data_path, 
           batch_size=32, 
@@ -11,7 +13,7 @@ def train(*, data_path,
           num_features=150, 
           learning_rate=0.001, 
           val_check_interval=1000, 
-          max_bits=1024,
+          max_bits=1500,
           num_workers=1,
           train_ratio=0.95,
           ckpt_path=None, 

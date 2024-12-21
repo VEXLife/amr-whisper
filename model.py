@@ -1,7 +1,9 @@
+import lightning as L
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import lightning as L
+from einops import rearrange, reduce
+
 from dataset import get_modulation_symb_bits, recover_symb_seq_from_bin_seq
 
 
@@ -107,9 +109,8 @@ class LitDenseNet(L.LightningModule):
         super(LitDenseNet, self).__init__()
         self.encoder = DenseNet(num_feats)
 
-        # Output layers for binary classifiers
-        self.binary_classifiers = nn.ModuleList(
-            [nn.Linear(num_feats * 2, 3) for _ in range(max_bits)])
+        # Output layers for binary classifier
+        self.binary_classifier = nn.Linear(num_feats * 2, max_bits * 3)
 
         # Output layers for symb_type classifier
         self.symb_type_classifier = nn.Linear(num_feats * 2, 10)
@@ -127,12 +128,8 @@ class LitDenseNet(L.LightningModule):
         features = self.encoder(iq_wave_batch)
 
         # Binary classification for each bit
-        output_bits_logits = []
-        for classifier in self.binary_classifiers:
-            output_bits_logits.append(classifier(features))
-        output_bits_logits = torch.stack(output_bits_logits, dim=0)
-        output_bits_logits = output_bits_logits.permute(
-            1, 2, 0)  # (batch, 3, max_bits)
+        output_bits_logits = self.binary_classifier(features)
+        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=3)
 
         # symb_type classification
         symb_type_logits = self.symb_type_classifier(features)
@@ -140,10 +137,11 @@ class LitDenseNet(L.LightningModule):
         # Symbol width regression
         symbol_width_logits = self.symbol_width_regressor(features)
 
-        valid_len = min(bin_seq_batch.size(1), self.max_bits)
-
-        seq_loss = F.cross_entropy(
-            output_bits_logits[:, :, :valid_len], bin_seq_batch[:, :valid_len])
+        # Pad binary sequence to match output size
+        assert bin_seq_batch.size(1) <= self.max_bits, f"Binary sequence length {bin_seq_batch.size(1)} is greater than max_bits {self.max_bits}"
+        bin_seq_batch = F.pad(
+            bin_seq_batch, (0, self.max_bits - bin_seq_batch.size(1)), "constant", 2)
+        seq_loss = F.cross_entropy(output_bits_logits, bin_seq_batch)
         symb_type_loss = F.cross_entropy(symb_type_logits, symb_type_batch - 1)
         width_loss = F.mse_loss(symbol_width_logits,
                                 symb_wid_batch.unsqueeze(1))
@@ -159,19 +157,13 @@ class LitDenseNet(L.LightningModule):
         features = self.encoder(iq_wave_batch)
 
         # Binary classification for each bit
+        output_bits_logits = self.binary_classifier(features)        
+        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=3)
+        output_bits = torch.argmax(output_bits_logits, dim=1)
         batch_size = iq_wave_batch.size(0)
         output_bits_hat = []
         for i in range(batch_size):
-            output_bits = []
-            for classifier in self.binary_classifiers:
-                bit = torch.argmax(classifier(features[i].unsqueeze(0)), dim=1)
-                if bit == 2:
-                    if len(output_bits) == 0:
-                        continue
-                    else:
-                        break
-                output_bits.append(bit)
-            output_bits_hat.append(output_bits)
+            output_bits_hat.append(output_bits[i][output_bits[i] != 2])
 
         # Symbol modulation type classification
         symb_type = torch.argmax(self.symb_type_classifier(features), dim=1)
@@ -185,7 +177,9 @@ class LitDenseNet(L.LightningModule):
         features = self.encoder(iq_wave_batch)
 
         # Binary classification for each bit
-        output_bits_hat, symb_type_hat, symbol_width_hat = self.predict_step(iq_wave_batch, batch_idx)
+        output_bits_hat, symb_type_hat, symbol_width_hat = self.predict_step(
+            iq_wave_batch, batch_idx
+        )
         batch_size = symb_seq_batch.size(0)
 
         mt_score = (symb_type_hat == symb_type_batch - 1).float().mean() * 100
@@ -202,7 +196,9 @@ class LitDenseNet(L.LightningModule):
             # Ensure symb_type_batch[i] is on CPU to get the item, then use the device for tensors
             symb_type_val = symb_type_batch[i].item()
             symb_seq_hat = recover_symb_seq_from_bin_seq(
-                output_bits_hat[i], get_modulation_symb_bits(symb_type_val), device
+                output_bits_hat[i], 
+                get_modulation_symb_bits(symb_type_val), 
+                device
             )
 
             # Remove -1 elements from the ground truth
@@ -212,14 +208,8 @@ class LitDenseNet(L.LightningModule):
 
             if symb_seq_ground_truth_len == 0 or symb_seq_hat_len == 0:
                 continue
-            if symb_seq_ground_truth_len <= symb_seq_hat_len:
-                # Slice the predicted symbol sequence to the same length as the ground truth
-                symb_seq_hat = symb_seq_hat[0, :symb_seq_ground_truth_len]
-            else:
-                # Pad the symbol sequence to the same length as the ground truth
-                padding = torch.zeros(1, symb_seq_ground_truth_len - symb_seq_hat_len, device=device)
-                symb_seq_hat = torch.cat([symb_seq_hat, padding], dim=1)
-            
+            symb_seq_hat = F.pad(symb_seq_hat, (0, symb_seq_ground_truth_len - symb_seq_hat_len), "constant", 0)
+
             cs = torch.cosine_similarity(
                 symb_seq_hat.float(), symb_seq_ground_truth.float().unsqueeze(0)
             )
