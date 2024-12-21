@@ -1,6 +1,7 @@
 import fire
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger, CSVLogger
+from lightning.pytorch.callbacks import ModelCheckpoint
 from dataset import SignalDataModule
 from model import LitDenseNet
 
@@ -11,7 +12,7 @@ def train(*, data_path,
           learning_rate=0.001, 
           val_check_interval=1000, 
           max_bits=1024,
-          num_workers=0,
+          num_workers=1,
           train_ratio=0.95,
           ckpt_path=None, 
           wandb_logging=True):
@@ -41,18 +42,25 @@ def train(*, data_path,
     else:
         logger = CSVLogger(name="wahahaha_receiver", save_dir="logs")
 
-    # Initialize PyTorch Lightning model and datamodule
+    # Initialize PyTorch Lightning model and datamodule and callbacks
     model = LitDenseNet(num_feats=num_features, lr=learning_rate, max_bits=max_bits)
     data_module = SignalDataModule(data_path, 
                                    batch_size=batch_size, 
                                    num_workers=num_workers, 
                                    train_ratio=train_ratio)
+    best_checkpoint_callback = ModelCheckpoint(monitor="val/score", mode="max", save_top_k=5, dirpath="checkpoints", every_n_train_steps=val_check_interval, filename="{val/score:.2f}-{epoch}")
+    epoch_checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_on_train_epoch_end=True, filename="end-{epoch}")
+
 
     # Define a Trainer
     trainer = L.Trainer(max_epochs=num_epochs,
                         logger=logger,
                         log_every_n_steps=4,
-                        val_check_interval=val_check_interval)
+                        val_check_interval=val_check_interval,
+                        callbacks=[
+                            best_checkpoint_callback,
+                            epoch_checkpoint_callback,
+                        ])
 
     # Train the model
     print("Start training...")
