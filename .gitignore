@@ -15,3 +15,5 @@ train_data/
 launch*
 *.zip
 *.ckpt
+test_data/
+result.csv
