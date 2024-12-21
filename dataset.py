@@ -6,6 +6,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import torch.nn.utils.rnn as rnn_utils
 import lightning as L
 
+multipliers_full_5bits = (2 ** torch.arange(4, -1, -1)).float().unsqueeze(0)
 
 def recover_symb_seq_from_bin_seq(bin_seq: list[torch.LongTensor], symb_bits: int, device: torch.device) -> torch.FloatTensor:
     """
@@ -26,14 +27,15 @@ def recover_symb_seq_from_bin_seq(bin_seq: list[torch.LongTensor], symb_bits: in
         return torch.tensor([], dtype=torch.float32, device=device)  # Empty tensor on the correct device
     
     # Pad the binary sequence to the nearest multiple of symb_bits
-    pad_len = symb_bits - (len(bin_seq) % symb_bits) if len(bin_seq) % symb_bits != 0 else 0
+    remaining_bits_count = len(bin_seq) % symb_bits
+    pad_len = symb_bits - remaining_bits_count if remaining_bits_count != 0 else 0
     if pad_len > 0:
         # Ensure the padding tensors are on the correct device and of type Long
         padding = [torch.tensor([0], dtype=torch.long, device=device) for _ in range(pad_len)]
         bin_seq = bin_seq + padding  # Pad on the correct device
     
     # Convert to symbol sequence
-    multipliers = (2 ** torch.arange(symb_bits - 1, -1, -1, device=device)).float().unsqueeze(0)  # Shape: (1, symb_bits)
+    multipliers = multipliers_full_5bits[:, :symb_bits].to(device)  # Shape: (1, symb_bits)
     
     # Ensure that bin_seq_mat is of type float32 for the matrix multiplication
     bin_seq_mat = torch.stack(bin_seq).to(torch.float32).reshape(-1, symb_bits)  # Shape: (num_symbols, symb_bits)

@@ -206,7 +206,7 @@ class LitDenseNet(L.LightningModule):
             )
 
             # Remove -1 elements from the ground truth
-            symb_seq_ground_truth = symb_seq_batch[i][symb_seq_batch[i] != -1].to(device)
+            symb_seq_ground_truth = symb_seq_batch[i][symb_seq_batch[i] != -1]
             symb_seq_ground_truth_len = symb_seq_ground_truth.numel()
             symb_seq_hat_len = symb_seq_hat.numel()
 

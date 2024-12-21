@@ -12,3 +12,4 @@ wheels/
 *.lock
 train_data/
 *logs
+launch*
