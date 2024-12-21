@@ -182,23 +182,31 @@ class LitDenseNet(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         iq_wave_batch, _, symb_seq_batch, symb_type_batch, symb_wid_batch = batch
-        output_bits_hat, symb_type_hat, symbol_width_hat = self.predict_step(
-            iq_wave_batch, batch_idx)
+        features = self.encoder(iq_wave_batch)
+
+        # Binary classification for each bit
+        output_bits_hat, symb_type_hat, symbol_width_hat = self.predict_step(iq_wave_batch, batch_idx)
         batch_size = symb_seq_batch.size(0)
 
         mt_score = (symb_type_hat == symb_type_batch - 1).float().mean() * 100
         self.log('val/mt_score', mt_score)
 
         er = torch.abs((symb_wid_batch - symbol_width_hat) / symb_wid_batch)
-        sw_score = torch.clip(100 - (er - 0.05) / 0.15 * 100, 0, 100).mean()
+        sw_score = torch.clamp(100 - (er - 0.05) / 0.15 * 100, 0, 100).mean()
         self.log('val/sw_score', sw_score)
 
         cq = 0
+        device = features.device  # Get the device from features
+
         for i in range(batch_size):
+            # Ensure symb_type_batch[i] is on CPU to get the item, then use the device for tensors
+            symb_type_val = symb_type_batch[i].item()
             symb_seq_hat = recover_symb_seq_from_bin_seq(
-                output_bits_hat[i], get_modulation_symb_bits(symb_type_batch[i]))
+                output_bits_hat[i], get_modulation_symb_bits(symb_type_val), device
+            )
+
             # Remove -1 elements from the ground truth
-            symb_seq_ground_truth = symb_seq_batch[i][symb_seq_batch[i] != -1]
+            symb_seq_ground_truth = symb_seq_batch[i][symb_seq_batch[i] != -1].to(device)
             symb_seq_ground_truth_len = symb_seq_ground_truth.numel()
             symb_seq_hat_len = symb_seq_hat.numel()
 
@@ -209,11 +217,13 @@ class LitDenseNet(L.LightningModule):
                 symb_seq_hat = symb_seq_hat[0, :symb_seq_ground_truth_len]
             else:
                 # Pad the symbol sequence to the same length as the ground truth
-                symb_seq_hat = torch.cat([symb_seq_hat, torch.zeros(
-                    1, symb_seq_ground_truth_len - symb_seq_hat_len)], dim=1)
+                padding = torch.zeros(1, symb_seq_ground_truth_len - symb_seq_hat_len, device=device)
+                symb_seq_hat = torch.cat([symb_seq_hat, padding], dim=1)
+            
             cs = torch.cosine_similarity(
-                symb_seq_hat.float(), symb_seq_ground_truth.float().unsqueeze(0))
-            cq += torch.clip((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
+                symb_seq_hat.float(), symb_seq_ground_truth.float().unsqueeze(0)
+            )
+            cq += torch.clamp((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
         self.log('val/cq_score', cq)
 
         score = 0.2 * mt_score + 0.3 * sw_score + 0.5 * cq

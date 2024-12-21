@@ -7,22 +7,41 @@ import torch.nn.utils.rnn as rnn_utils
 import lightning as L
 
 
-def recover_symb_seq_from_bin_seq(bin_seq: list[torch.LongTensor], symb_bits: int) -> torch.LongTensor:
+def recover_symb_seq_from_bin_seq(bin_seq: list[torch.LongTensor], symb_bits: int, device: torch.device) -> torch.FloatTensor:
+    """
+    Recover symbol sequence from binary sequence.
+
+    Args:
+        bin_seq (list[torch.LongTensor]): List of binary tensors.
+        symb_bits (int): Number of bits per symbol.
+        device (torch.device): Device to place the tensors on.
+
+    Returns:
+        torch.FloatTensor: Recovered symbol sequence tensor of shape (1, symb_seq_len).
+    """
     if symb_bits == 1:
-        return torch.Tensor(bin_seq).unsqueeze(0)  # 1 bit per symbol, no need to convert
+        return torch.tensor(bin_seq, dtype=torch.float32, device=device).unsqueeze(0)  # Shape: (1, len(bin_seq))
     
     if len(bin_seq) == 0:
-        return torch.Tensor(0)  # Empty sequence, no need to convert
+        return torch.tensor([], dtype=torch.float32, device=device)  # Empty tensor on the correct device
     
     # Pad the binary sequence to the nearest multiple of symb_bits
-    pad_len = symb_bits - len(bin_seq) % symb_bits
-    bin_seq = bin_seq + [torch.LongTensor([0])] * pad_len
-
+    pad_len = symb_bits - (len(bin_seq) % symb_bits) if len(bin_seq) % symb_bits != 0 else 0
+    if pad_len > 0:
+        # Ensure the padding tensors are on the correct device and of type Long
+        padding = [torch.tensor([0], dtype=torch.long, device=device) for _ in range(pad_len)]
+        bin_seq = bin_seq + padding  # Pad on the correct device
+    
     # Convert to symbol sequence
-    multipliers = 2 ** torch.arange(symb_bits - 1, -1, -1).unsqueeze(0)
-    bin_seq_mat = torch.stack(bin_seq).reshape(-1, symb_bits)
-    symb_seq = torch.matmul(bin_seq_mat, multipliers.T).T # A two-dimensional tensor
-    return symb_seq # Shape: (1, symb_seq_len)
+    multipliers = (2 ** torch.arange(symb_bits - 1, -1, -1, device=device)).float().unsqueeze(0)  # Shape: (1, symb_bits)
+    
+    # Ensure that bin_seq_mat is of type float32 for the matrix multiplication
+    bin_seq_mat = torch.stack(bin_seq).to(torch.float32).reshape(-1, symb_bits)  # Shape: (num_symbols, symb_bits)
+    
+    # Perform matrix multiplication to convert binary to symbol
+    symb_seq = torch.matmul(bin_seq_mat, multipliers.T).T  # Shape: (1, num_symbols)
+    
+    return symb_seq  # Shape: (1, num_symbols)
 
 
 def convert_to_bin_seq_and_pad(symb_seq, symb_bits):
