@@ -153,7 +153,7 @@ class LitDenseNet(L.LightningModule):
         return loss
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        iq_wave_batch = batch
+        iq_wave_batch, _, _, _, _ = batch
         features = self.encoder(iq_wave_batch)
 
         # Binary classification for each bit

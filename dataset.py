@@ -132,26 +132,50 @@ class SignalDataModule(L.LightningDataModule):
         self.train_ratio = train_ratio
         self.num_workers = num_workers
         self.collate_fn = collate_fn
+        self.dataset = None  # 整个数据集
+        self.train_dataset = None
+        self.val_dataset = None
 
     def setup(self, stage=None):
-        dataset = SignalDataset(self.data_path)
-        train_size = int(self.train_ratio * len(dataset))
-        val_size = len(dataset) - train_size
-        self.train_dataset, self.val_dataset = random_split(
-            dataset, [train_size, val_size])
+        print(f"Setup called with stage: {stage}")
+        if stage == "fit" or stage == "validate":
+            # 划分训练集和验证集
+            self.dataset = SignalDataset(self.data_path)
+            train_size = int(self.train_ratio * len(self.dataset))
+            val_size = len(self.dataset) - train_size
+            self.train_dataset, self.val_dataset = random_split(
+                self.dataset, [train_size, val_size]
+            )
+        elif stage == "predict":
+            # 预测阶段直接加载整个数据集
+            self.dataset = SignalDataset(self.data_path)
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset,
-                          batch_size=self.batch_size,
-                          shuffle=True,
-                          num_workers=self.num_workers,
-                          persistent_workers=True,
-                          collate_fn=self.collate_fn)
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            collate_fn=self.collate_fn,
+        )
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset,
-                          batch_size=self.batch_size,
-                          shuffle=False,
-                          num_workers=self.num_workers,
-                          persistent_workers=True,
-                          collate_fn=self.collate_fn)
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            collate_fn=self.collate_fn,
+        )
+
+    def predict_dataloader(self):
+        """
+        预测阶段的数据加载器。
+        """
+        return DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            collate_fn=self.collate_fn,
+        )
