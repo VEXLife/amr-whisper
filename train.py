@@ -69,7 +69,7 @@ def train(*, data_path,
     trainer.fit(model, data_module, ckpt_path=ckpt_path)
 
     # Finalize the logger
-    logger.finalize()
+    logger.finalize(status="success")
 
 if __name__ == "__main__":
     fire.Fire(train)
