@@ -1,5 +1,6 @@
 import glob
 import os
+import sys
 
 import lightning as L
 import pandas as pd
@@ -61,19 +62,18 @@ def get_modulation_symb_bits(symb_type):
     Get the number of bits per symbol for a given modulation type index.
     1: BPSK, 2: QPSK, 3: 8PSK, 4: MSK, 5: 8QAM, 6: 16-QAM, 7: 32-QAM, 8: 8-APSK, 9: 16-APSK, 10: 32-APSK
     """
-    match symb_type:
-        case 1 | 4:
-            return 1
-        case 2:
-            return 2
-        case 3 | 5 | 8:
-            return 3
-        case 6 | 9:
-            return 4
-        case 7 | 10:
-            return 5
-        case _:
-            raise ValueError(f"Unknown modulation type index: {symb_type}")
+    if symb_type in [1, 4]:
+        return 1
+    elif symb_type == 2:
+        return 2
+    elif symb_type in [3, 5, 8]:
+        return 3
+    elif symb_type in [6, 9]:
+        return 4
+    elif symb_type in [7, 10]:
+        return 5
+    else:
+        raise ValueError(f"Unknown modulation type index: {symb_type}")
 
 
 class SignalDataset(Dataset):
