@@ -1,5 +1,6 @@
 import glob
 import os
+import sys
 
 import lightning as L
 import pandas as pd
@@ -36,7 +37,7 @@ def recover_symb_seq_from_bin_seq(bin_seq: torch.LongTensor, symb_bits: int, dev
         bin_seq = F.pad(bin_seq, (0, pad_len), 'constant', 0)
     
     # Convert to symbol sequence
-    multipliers = multipliers_full_5bits[:symb_bits, :].to(device)  # Shape: (1, symb_bits)
+    multipliers = multipliers_full_5bits[-symb_bits:, :].to(device)  # Shape: (1, symb_bits)
     
     # Ensure that bin_seq_mat is of type float32 for the matrix multiplication
     bin_seq_mat = rearrange(bin_seq, '(l symb_bits) -> l symb_bits', symb_bits=symb_bits).float()
@@ -61,19 +62,18 @@ def get_modulation_symb_bits(symb_type):
     Get the number of bits per symbol for a given modulation type index.
     1: BPSK, 2: QPSK, 3: 8PSK, 4: MSK, 5: 8QAM, 6: 16-QAM, 7: 32-QAM, 8: 8-APSK, 9: 16-APSK, 10: 32-APSK
     """
-    match symb_type:
-        case 1 | 4:
-            return 1
-        case 2:
-            return 2
-        case 3 | 5 | 8:
-            return 3
-        case 6 | 9:
-            return 4
-        case 7 | 10:
-            return 5
-        case _:
-            raise ValueError(f"Unknown modulation type index: {symb_type}")
+    if symb_type in [1, 4]:
+        return 1
+    elif symb_type == 2:
+        return 2
+    elif symb_type in [3, 5, 8]:
+        return 3
+    elif symb_type in [6, 9]:
+        return 4
+    elif symb_type in [7, 10]:
+        return 5
+    else:
+        raise ValueError(f"Unknown modulation type index: {symb_type}")
 
 
 class SignalDataset(Dataset):
@@ -124,34 +124,98 @@ def _collate_fn(train_data):
     return iq_wave, bin_seq, symb_seq, symb_type, symb_wid
 
 
+class SignalPredictionDataset(Dataset):
+    def __init__(self, data_path):
+        super(SignalPredictionDataset, self).__init__()
+        # Recursively find all csv files in the data_path
+        self.file_list = glob.glob(os.path.join(data_path, '**/*.csv'), recursive=True)
+        self.cache = {}  # Dictionary for caching data
+
+    def __len__(self):
+        return len(self.file_list)
+
+    def __getitem__(self, index):
+        if index in self.cache:
+            return self.cache[index]
+        
+        data = pd.read_csv(self.file_list[index], header=None, names=['I', 'Q'])
+        
+        iq_wave = data.values
+
+        iq_wave = torch.tensor(iq_wave, dtype=torch.float32)
+        self.cache[index] = iq_wave
+
+        return iq_wave
+
+
+def _collate_fn_for_pred(pred_data):
+    iq_wave = pred_data
+    iq_wave = rnn_utils.pad_sequence(
+        iq_wave, batch_first=True, padding_value=0)
+    iq_wave = rearrange(iq_wave, 'b t c -> b c t')
+    return iq_wave
+
 class SignalDataModule(L.LightningDataModule):
-    def __init__(self, data_path, batch_size=32, train_ratio=0.8, num_workers=0, collate_fn=_collate_fn):
+    def __init__(self, data_path, batch_size=32, train_ratio=0.8, num_workers=0, collate_fn=None):
         super(SignalDataModule, self).__init__()
         self.data_path = data_path
         self.batch_size = batch_size
         self.train_ratio = train_ratio
         self.num_workers = num_workers
         self.collate_fn = collate_fn
+        self.dataset = None  # 整个数据集
+        self.train_dataset = None
+        self.val_dataset = None
 
     def setup(self, stage=None):
-        dataset = SignalDataset(self.data_path)
-        train_size = int(self.train_ratio * len(dataset))
-        val_size = len(dataset) - train_size
-        self.train_dataset, self.val_dataset = random_split(
-            dataset, [train_size, val_size])
+        print(f"Setup called with stage: {stage}")
+        if stage == "fit" or stage == "validate":
+            # 划分训练集和验证集
+            self.dataset = SignalDataset(self.data_path)
+            train_size = int(self.train_ratio * len(self.dataset))
+            val_size = len(self.dataset) - train_size
+            self.train_dataset, self.val_dataset = random_split(
+                self.dataset, [train_size, val_size]
+            )
+
+            if self.collate_fn is None:
+                self.collate_fn = _collate_fn
+        elif stage == "predict":
+            # 预测阶段直接加载整个数据集
+            self.dataset = SignalPredictionDataset(self.data_path)
+
+            if self.collate_fn is None:
+                self.collate_fn = _collate_fn_for_pred
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset,
-                          batch_size=self.batch_size,
-                          shuffle=True,
-                          num_workers=self.num_workers,
-                          persistent_workers=True,
-                          collate_fn=self.collate_fn)
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            collate_fn=self.collate_fn,
+        )
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset,
-                          batch_size=self.batch_size,
-                          shuffle=False,
-                          num_workers=self.num_workers,
-                          persistent_workers=True,
-                          collate_fn=self.collate_fn)
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            collate_fn=self.collate_fn,
+        )
+
+    def predict_dataloader(self):
+        """
+        预测阶段的数据加载器。
+        """
+        return DataLoader(
+            self.dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            collate_fn=self.collate_fn,
+        )

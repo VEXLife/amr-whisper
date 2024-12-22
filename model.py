@@ -110,7 +110,7 @@ class LitDenseNet(L.LightningModule):
         self.encoder = DenseNet(num_feats)
 
         # Output layers for binary classifier
-        self.binary_classifier = nn.Linear(num_feats * 2, max_bits * 3)
+        self.binary_classifier = nn.Linear(num_feats * 2, max_bits * 2)
 
         # Output layers for symb_type classifier
         self.symb_type_classifier = nn.Linear(num_feats * 2, 10)
@@ -121,7 +121,7 @@ class LitDenseNet(L.LightningModule):
         self.lr = lr
         self.max_bits = max_bits
 
-        self.save_hyperparameters("num_feats", "lr")
+        self.save_hyperparameters("num_feats", "lr", "max_bits")
 
     def training_step(self, batch, batch_idx):
         iq_wave_batch, bin_seq_batch, _, symb_type_batch, symb_wid_batch = batch
@@ -129,7 +129,7 @@ class LitDenseNet(L.LightningModule):
 
         # Binary classification for each bit
         output_bits_logits = self.binary_classifier(features)
-        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=3)
+        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=2)
 
         # symb_type classification
         symb_type_logits = self.symb_type_classifier(features)
@@ -139,9 +139,9 @@ class LitDenseNet(L.LightningModule):
 
         # Pad binary sequence to match output size
         assert bin_seq_batch.size(1) <= self.max_bits, f"Binary sequence length {bin_seq_batch.size(1)} is greater than max_bits {self.max_bits}"
-        bin_seq_batch = F.pad(
+        bin_seq_batch_padded = F.pad(
             bin_seq_batch, (0, self.max_bits - bin_seq_batch.size(1)), "constant", 2)
-        seq_loss = F.cross_entropy(output_bits_logits, bin_seq_batch)
+        seq_loss = F.cross_entropy(output_bits_logits, bin_seq_batch_padded, ignore_index=2)
         symb_type_loss = F.cross_entropy(symb_type_logits, symb_type_batch - 1)
         width_loss = F.mse_loss(symbol_width_logits,
                                 symb_wid_batch.unsqueeze(1))
@@ -158,12 +158,8 @@ class LitDenseNet(L.LightningModule):
 
         # Binary classification for each bit
         output_bits_logits = self.binary_classifier(features)        
-        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=3)
-        output_bits = torch.argmax(output_bits_logits, dim=1)
-        batch_size = iq_wave_batch.size(0)
-        output_bits_hat = []
-        for i in range(batch_size):
-            output_bits_hat.append(output_bits[i][output_bits[i] != 2])
+        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=2)
+        output_bits_hat = torch.argmax(output_bits_logits, dim=1)
 
         # Symbol modulation type classification
         symb_type = torch.argmax(self.symb_type_classifier(features), dim=1)
@@ -189,9 +185,8 @@ class LitDenseNet(L.LightningModule):
         sw_score = torch.clamp(100 - (er - 0.05) / 0.15 * 100, 0, 100).mean()
         self.log('val/sw_score', sw_score)
 
-        cq = 0
+        cq_score = 0
         device = features.device  # Get the device from features
-
         for i in range(batch_size):
             # Ensure symb_type_batch[i] is on CPU to get the item, then use the device for tensors
             symb_type_val = symb_type_batch[i].item()
@@ -213,10 +208,10 @@ class LitDenseNet(L.LightningModule):
             cs = torch.cosine_similarity(
                 symb_seq_hat.float(), symb_seq_ground_truth.float().unsqueeze(0)
             )
-            cq += torch.clamp((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
-        self.log('val/cq_score', cq)
+            cq_score += torch.clamp((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
+        self.log('val/cq_score', cq_score)
 
-        score = 0.2 * mt_score + 0.3 * sw_score + 0.5 * cq
+        score = 0.2 * mt_score + 0.3 * sw_score + 0.5 * cq_score
         self.log('val/score', score)
 
     def configure_optimizers(self):

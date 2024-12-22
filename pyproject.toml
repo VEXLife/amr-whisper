@@ -7,10 +7,9 @@ requires-python = ">=3.9, <3.13"
 dependencies = [
     "einops>=0.8.0",
     "fire>=0.7.0",
-    "ipykernel>=6.29.5",
-    "lightning>=2.4.0",
-    "matplotlib>=3.9.4",
-    "pandas>=2.2.3",
+    "lightning>=2",
+    "matplotlib>=3",
+    "pandas>=2",
     "torch>=2.1",
     "transformers>=4.1.0",
     "wandb>=0.19.1",
