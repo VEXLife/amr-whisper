@@ -44,7 +44,8 @@ def main(to_pred_dir, result_save_path):
     # 使用 Trainer 的 predict 方法进行预测
     predictions = trainer.predict(model, datamodule=data_module)
 
-    for filename, pred in zip(test_file_lst, predictions):
+    file_idx = 0
+    for pred in predictions:
         output_bits_hat, symb_type_batch, symbol_width_batch = pred
         # 遍历批量数据
         for idx in range(symb_type_batch.shape[0]):
@@ -59,8 +60,8 @@ def main(to_pred_dir, result_save_path):
             code_sequence_str = ' '.join(map(str, code_sequence.squeeze(0).numpy().astype(int)))
 
             # 添加结果到列表
-            result.append(f"{filename},{modulation_type},{symbol_width: .2f},{code_sequence_str}")
-
+            result.append(f"{test_file_lst[file_idx]},{modulation_type},{symbol_width},{code_sequence_str}")
+            file_idx += 1
 
     # 将预测结果保存到 result_save_path
     with open(result_save_path, 'w') as f:

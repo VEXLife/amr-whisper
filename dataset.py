@@ -127,8 +127,8 @@ def _collate_fn(train_data):
 class SignalPredictionDataset(Dataset):
     def __init__(self, data_path):
         super(SignalPredictionDataset, self).__init__()
-        # Recursively find all csv files in the data_path
-        self.file_list = glob.glob(os.path.join(data_path, '**/*.csv'), recursive=True)
+        # List all csv files in the data_path
+        self.file_list = glob.glob(os.path.join(data_path, '*.csv'), recursive=False)
         self.cache = {}  # Dictionary for caching data
 
     def __len__(self):

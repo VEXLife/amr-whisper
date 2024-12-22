@@ -3,7 +3,7 @@ name = "WahahahaReceiver"
 version = "0.1.0"
 description = "WahahahaReceiver is a deep learning model for receiving signals modulated in I/Q format."
 readme = "README.md"
-requires-python = ">=3.9, <3.13"
+requires-python = ">=3.8, <3.13"
 dependencies = [
     "einops>=0.8.0",
     "lightning>=2",
