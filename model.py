@@ -1,203 +1,101 @@
-import lightning as L
+from vocab import vocab, vocab_inv
 import torch
-import torch.nn as nn
+from typing import List, Tuple
+import numpy as np
+from transformers import LogitsProcessor
 import torch.nn.functional as F
-from einops import rearrange, reduce
 
-from dataset import get_modulation_symb_bits, recover_symb_seq_from_bin_seq
+symb_type_dict = {
+    1: "<|BPSK|>",
+    2: "<|QPSK|>",
+    3: "<|8PSK|>",
+    4: "<|MSK|>",
+    5: "<|8QAM|>",
+    6: "<|16QAM|>",
+    7: "<|32QAM|>",
+    8: "<|8APSK|>",
+    9: "<|16APSK|>",
+    10: "<|32APSK|>",
+    11: "<|unknownmod|>"
+}
+symb_type_dict_inv = {v: k for k, v in symb_type_dict.items()}
 
+class SignalTokenizer:
+    def __init__(self, vocab):
+        self.vocab = vocab
+        self.__call__ = self.encode
 
-class BasicBlock(nn.Module):
-    def __init__(self, in_channels, growth_rate):
-        super(BasicBlock, self).__init__()
-        self.bn = nn.BatchNorm1d(in_channels)
-        self.relu = nn.ReLU()
-        self.conv = nn.Conv1d(in_channels, growth_rate,
-                              kernel_size=5, padding=2)
+    def encode(self, symb_type: int, symb_wid: float, symb_seq: np.ndarray) -> torch.LongTensor:
+        input_ids = [vocab[symb_type_dict[symb_type]]] + [vocab[f"<|{symb_wid:.2f}|>"]] + [vocab['0'] + symb for symb in symb_seq] + [vocab["<|eos|>"]]
+        return torch.tensor(input_ids, dtype=torch.long)
+    
+    def decode(self, input_ids: torch.LongTensor) -> Tuple[int, float, list]:
+        input_ids = list(input_ids[input_ids != -100])
+        # print(''.join([vocab_inv[input_ids[j].item()] for j in range(len(input_ids))]))
+        if vocab_inv[input_ids[0].item()] == "<|startoftranscript|>":
+            input_ids = input_ids[1:]
+        symb_type = symb_type_dict_inv[vocab_inv[input_ids[0].item()]]
+        symb_wid = float(vocab_inv[input_ids[1].item()][2:-2])
+        symb_seq = [input_id.item() - vocab['0'] for input_id in input_ids[2:]]
+        return symb_type, symb_wid, symb_seq
 
-    def forward(self, x):
-        out = self.conv(self.relu(self.bn(x)))
-        out = torch.cat([x, out], dim=1)
-        return out
+    def batch_decode(self, batch: torch.LongTensor | List[torch.LongTensor]) -> Tuple[torch.Tensor, torch.Tensor, list]:
+        symb_types = []
+        symb_wids = []
+        symb_seqs = []
+        for input_ids in batch:
+            symb_type, symb_wid, symb_seq = self.decode(input_ids)
+            symb_types.append(symb_type)
+            symb_wids.append(symb_wid)
+            symb_seqs.append(symb_seq)
+        return torch.tensor(symb_types, dtype=torch.long), torch.tensor(symb_wids, dtype=torch.float), symb_seqs
 
+class SignalLogitsProcessor(LogitsProcessor):
+    def __init__(self):
+        super(SignalLogitsProcessor, self).__init__()
+        self.symb_type_mask = torch.tensor([vocab[symb_type_text] for symb_type_text in symb_type_dict.values()], dtype=torch.long)
+        self.symb_wid_mask = torch.tensor([vocab[f"<|{symb_wid:.2f}|>"] for symb_wid in torch.linspace(0,1,21)], dtype=torch.long)
+        self.symb_seq_mask = torch.tensor([i + vocab['0'] for i in range(32)], dtype=torch.long)
 
-class TransitionBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(TransitionBlock, self).__init__()
-        self.bn = nn.BatchNorm1d(in_channels)
-        self.relu = nn.ReLU()
-        self.conv = nn.Conv1d(in_channels, out_channels,
-                              kernel_size=5, padding=2)
-        self.pool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+    def __call__(self, input_ids, scores):
+        # The 1st token is the modulation type, the 2nd token is the symbol width, and the rest are the symbol sequence
+        new_scores = torch.full_like(scores, -float('inf'))
+        if input_ids.numel() == 1:
+            new_scores[:, self.symb_type_mask] = scores[:, self.symb_type_mask]
+        elif input_ids.numel() == 2:
+            new_scores[:, self.symb_wid_mask] = scores[:, self.symb_wid_mask]
+        else:
+            new_scores[:, self.symb_seq_mask] = scores[:, self.symb_seq_mask]
+        return new_scores
 
-    def forward(self, x):
-        out = self.pool(self.conv(self.relu(self.bn(x))))
-        return out
+class ComputeMetrics:
+    def __init__(self, logits_processor_list, tokenizer):
+        self.logits_processor_list = logits_processor_list
+        self.tokenizer = tokenizer
 
+    def __call__(self, pred):
+        pred_logits = torch.tensor(pred.predictions[0])
+        pred_ids = []
+        for i in range(pred_logits.shape[0]):
+            pred_seq_ids = [vocab["<|startoftranscript|>"]]
+            for j in range(pred_logits.shape[1]):
+                pred_logits_new = self.logits_processor_list(torch.tensor(pred_seq_ids), pred_logits[i,j].unsqueeze(0))
+                pred_seq_ids.append(torch.argmax(pred_logits_new))
+            pred_ids.append(torch.tensor(pred_seq_ids))
+        label_ids = pred.label_ids
+        batch_size = pred_logits.shape[0]
+        pred_symb_type, pred_symb_wid, pred_symb_seq = self.tokenizer.batch_decode(pred_ids)
+        label_symb_type, label_symb_wid, label_symb_seq = self.tokenizer.batch_decode(label_ids)
 
-class DenseBlock(nn.Module):
-    def __init__(self, num_layers, in_channels, growth_rate):
-        super(DenseBlock, self).__init__()
-        self.layers = nn.ModuleList([
-            BasicBlock(in_channels + i * growth_rate, growth_rate) for i in range(num_layers)
-        ])
+        mt_score = (pred_symb_type == label_symb_type).float().mean() * 100
 
-    def forward(self, x):
-        for layer in self.layers:
-            x = layer(x)
-        return x
-
-
-class DenseNet(nn.Module):
-    def __init__(self, num_feats=150):
-        super(DenseNet, self).__init__()
-        # Input has 2 channels (Re, Im)
-        self.initial_conv = nn.Conv1d(2, 64, kernel_size=5, padding=2)
-
-        # Define DenseNet structure
-        self.transition1 = TransitionBlock(64, 128)
-        self.dense1 = DenseBlock(2, 128, 128)
-
-        self.transition2 = TransitionBlock(128 + 2 * 128, 64)
-        self.dense2 = DenseBlock(3, 64, 64)
-
-        self.transition3 = TransitionBlock(64 + 3 * 64, 64)
-        self.dense3 = DenseBlock(4, 64, 64)
-
-        self.transition4 = TransitionBlock(64 + 4 * 64, 64)
-        self.dense4 = DenseBlock(3, 64, 64)
-
-        self.final_conv = nn.Conv1d(
-            64 + 3 * 64, num_feats, kernel_size=5, padding=2)
-
-        # Global Pooling layers
-        self.global_max_pool = nn.AdaptiveMaxPool1d(1)
-        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
-
-    def forward(self, x):
-        # Initial convolution
-        x = self.initial_conv(x)
-
-        # DenseNet layers
-        x = self.transition1(x)
-        x = self.dense1(x)
-
-        x = self.transition2(x)
-        x = self.dense2(x)
-
-        x = self.transition3(x)
-        x = self.dense3(x)
-
-        x = self.transition4(x)
-        x = self.dense4(x)
-
-        # Final convolution
-        x = self.final_conv(x)
-
-        # Global pooling
-        max_pooled = self.global_max_pool(x).squeeze(-1)
-        avg_pooled = self.global_avg_pool(x).squeeze(-1)
-
-        # Concatenate pooling results
-        features = torch.cat([max_pooled, avg_pooled], dim=1)
-
-        return features
-
-
-class LitDenseNet(L.LightningModule):
-    def __init__(self, num_feats=150, lr=1e-3, max_bits=32):
-        super(LitDenseNet, self).__init__()
-        self.encoder = DenseNet(num_feats)
-
-        # Output layers for binary classifier
-        self.binary_classifier = nn.Linear(num_feats * 2, max_bits * 2)
-
-        # Output layers for symb_type classifier
-        self.symb_type_classifier = nn.Linear(num_feats * 2, 10)
-
-        # Output layers for symbol width regressor
-        self.symbol_width_regressor = nn.Linear(num_feats * 2, 1)
-
-        self.lr = lr
-        self.max_bits = max_bits
-
-        self.save_hyperparameters("num_feats", "lr", "max_bits")
-
-    def training_step(self, batch, batch_idx):
-        iq_wave_batch, bin_seq_batch, _, symb_type_batch, symb_wid_batch = batch
-        features = self.encoder(iq_wave_batch)
-
-        # Binary classification for each bit
-        output_bits_logits = self.binary_classifier(features)
-        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=2)
-
-        # symb_type classification
-        symb_type_logits = self.symb_type_classifier(features)
-
-        # Symbol width regression
-        symbol_width_logits = self.symbol_width_regressor(features)
-
-        # Pad binary sequence to match output size
-        assert bin_seq_batch.size(1) <= self.max_bits, f"Binary sequence length {bin_seq_batch.size(1)} is greater than max_bits {self.max_bits}"
-        bin_seq_batch_padded = F.pad(
-            bin_seq_batch, (0, self.max_bits - bin_seq_batch.size(1)), "constant", 2)
-        seq_loss = F.cross_entropy(output_bits_logits, bin_seq_batch_padded, ignore_index=2)
-        symb_type_loss = F.cross_entropy(symb_type_logits, symb_type_batch - 1)
-        width_loss = F.mse_loss(symbol_width_logits,
-                                symb_wid_batch.unsqueeze(1))
-        loss = seq_loss + symb_type_loss + width_loss
-        self.log('train/seq_loss', seq_loss)
-        self.log('train/type_loss', symb_type_loss)
-        self.log('train/width_loss', width_loss)
-        self.log('train/loss', loss)
-        return loss
-
-    def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        iq_wave_batch = batch
-        features = self.encoder(iq_wave_batch)
-
-        # Binary classification for each bit
-        output_bits_logits = self.binary_classifier(features)        
-        output_bits_logits = rearrange(output_bits_logits, 'b (cls s) -> b cls s', cls=2)
-        output_bits_hat = torch.argmax(output_bits_logits, dim=1)
-
-        # Symbol modulation type classification
-        symb_type = torch.argmax(self.symb_type_classifier(features), dim=1)
-
-        # Symbol width regression
-        symbol_width = self.symbol_width_regressor(features)
-        return output_bits_hat, symb_type, symbol_width
-
-    def validation_step(self, batch, batch_idx):
-        iq_wave_batch, _, symb_seq_batch, symb_type_batch, symb_wid_batch = batch
-        features = self.encoder(iq_wave_batch)
-
-        # Binary classification for each bit
-        output_bits_hat, symb_type_hat, symbol_width_hat = self.predict_step(
-            iq_wave_batch, batch_idx
-        )
-        batch_size = symb_seq_batch.size(0)
-
-        mt_score = (symb_type_hat == symb_type_batch - 1).float().mean() * 100
-        self.log('val/mt_score', mt_score)
-
-        er = torch.abs((symb_wid_batch - symbol_width_hat.T) / symb_wid_batch)
+        er = torch.abs((pred_symb_wid - label_symb_wid) / label_symb_wid)
         sw_score = torch.clamp(100 - (er - 0.05) / 0.15 * 100, 0, 100).mean()
-        self.log('val/sw_score', sw_score)
 
         cq_score = 0
-        device = features.device  # Get the device from features
         for i in range(batch_size):
-            # Ensure symb_type_batch[i] is on CPU to get the item, then use the device for tensors
-            symb_type_val = symb_type_batch[i].item()
-            symb_seq_hat = recover_symb_seq_from_bin_seq(
-                output_bits_hat[i], 
-                get_modulation_symb_bits(symb_type_val), 
-                device
-            )
-
-            # Remove -1 elements from the ground truth
-            symb_seq_ground_truth = symb_seq_batch[i][symb_seq_batch[i] != -1]
+            symb_seq_hat = torch.tensor(pred_symb_seq[i], dtype=torch.float)
+            symb_seq_ground_truth = torch.tensor(label_symb_seq[i], dtype=torch.float)
             symb_seq_ground_truth_len = symb_seq_ground_truth.numel()
             symb_seq_hat_len = symb_seq_hat.numel()
 
@@ -206,14 +104,14 @@ class LitDenseNet(L.LightningModule):
             symb_seq_hat = F.pad(symb_seq_hat, (0, symb_seq_ground_truth_len - symb_seq_hat_len), "constant", 0)
 
             cs = torch.cosine_similarity(
-                symb_seq_hat.float(), symb_seq_ground_truth.float().unsqueeze(0)
+                symb_seq_hat.unsqueeze(0), symb_seq_ground_truth.unsqueeze(0)
             )
             cq_score += torch.clamp((cs - 0.7) / 0.25 * 100, 0, 100) / batch_size
-        self.log('val/cq_score', cq_score)
 
         score = 0.2 * mt_score + 0.3 * sw_score + 0.5 * cq_score
-        self.log('val/score', score)
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        return optimizer
+        return {
+            "score": score,
+            "mt_score": mt_score,
+            "sw_score": sw_score,
+            "cq_score": cq_score,
+        }

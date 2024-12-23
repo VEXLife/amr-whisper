@@ -1,75 +1,90 @@
 import fire
-import lightning as L
-from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.loggers import CSVLogger, WandbLogger
+from torch.utils.data import random_split
+from transformers import (LogitsProcessorList, Seq2SeqTrainer,
+                          Seq2SeqTrainingArguments, WhisperConfig,
+                          WhisperForConditionalGeneration)
 
-from dataset import SignalDataModule
-from model import LitDenseNet
+from dataset import SignalDataset, _collator_fn
+from model import ComputeMetrics, SignalLogitsProcessor, SignalTokenizer
+from vocab import vocab, vocab_inv, vocab_len
 
 
-def train(*, data_path, 
-          batch_size=32, 
-          num_epochs=20, 
-          num_features=150, 
-          learning_rate=0.001, 
-          val_check_interval=1000, 
-          max_bits=1500,
-          num_workers=1,
-          train_ratio=0.95,
-          ckpt_path=None, 
-          wandb_logging=True):
+def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=16,
+          per_device_eval_batch_size=16, weight_decay=0.01, eval_steps=5000,
+          logging_steps=100, save_steps=1000, output_dir="./logs/whisper_iq",
+          logging_dir="./logs/whisper_iq", run_name="whisper_finetune", report_to="wandb",
+          dataset_path='./train_data', train_ratio=0.99, max_source_positions=2048):
     """
-    Train the model and validate its performance.
+    Trains a Whisper model for conditional generation on a given dataset.
 
     Args:
-        data_path (str): Path to the dataset.
-        batch_size (int): Batch size for training.
-        num_epochs (int): Number of epochs to train the model.
-        num_features (int): Number of features to extract from the input signal.
-        learning_rate (float): Learning rate for the optimizer.
-        val_check_interval (int): Number of steps to check the validation performance.
-        max_bits (int): Maximum number of bits to predict.
-        num_workers (int): Number of workers for data loading.
-        train_ratio (float): Ratio of training data.
-        ckpt_path (str): Path to save the model checkpoints
-        wandb_logging (bool): Whether to log the training process to wandb.
+        learning_rate (float, optional): The learning rate for training. Defaults to 1e-4.
+        num_train_epochs (int, optional): The number of training epochs. Defaults to 20.
+        per_device_train_batch_size (int, optional): Batch size per device during training. Defaults to 16.
+        per_device_eval_batch_size (int, optional): Batch size per device during evaluation. Defaults to 16.
+        weight_decay (float, optional): Weight decay for optimization. Defaults to 0.01.
+        eval_steps (int, optional): Number of steps between evaluations. Defaults to 5000.
+        logging_steps (int, optional): Number of steps between logging. Defaults to 100.
+        save_steps (int, optional): Number of steps between model checkpoints. Defaults to 1000.
+        output_dir (str, optional): Directory to save model checkpoints. Defaults to "./logs/whisper_iq".
+        logging_dir (str, optional): Directory to save logs. Defaults to "./logs/whisper_iq".
+        run_name (str, optional): Name of the training run. Defaults to "whisper_finetune".
+        report_to (str, optional): Reporting tool for logging (e.g., "wandb"). Defaults to "wandb".
+        dataset_path (str, optional): Path to the training dataset. Defaults to './train_data'.
+        train_ratio (float, optional): Ratio of the dataset to use for training. Defaults to 0.99.
+        max_source_positions (int, optional): Maximum number of source positions. Defaults to 2048.
+        
+    Returns:
+        None
     """
-    # Initialize Weights and Biases
-    if wandb_logging:
-        logger = WandbLogger(name="wahahaha_receiver", save_dir="logs")
-        logger.experiment.config.update({
-            "batch_size": batch_size,
-            "num_epochs": num_epochs,
-        })
-    else:
-        logger = CSVLogger(name="wahahaha_receiver", save_dir="logs")
+    model_config = WhisperConfig(
+        vocab_size=vocab_len,
+        num_mel_bins=2,
+        max_source_positions=max_source_positions,
+        pad_token_id=vocab["<|pad|>"],
+        bos_token_id=vocab["<|startoftranscript|>"],
+        eos_token_id=vocab["<|eos|>"],
+        decoder_start_token_id=vocab["<|startoftranscript|>"],
+    )
+    model = WhisperForConditionalGeneration(config=model_config)
 
-    # Initialize PyTorch Lightning model and datamodule and callbacks
-    model = LitDenseNet(num_feats=num_features, lr=learning_rate, max_bits=max_bits)
-    data_module = SignalDataModule(data_path, 
-                                   batch_size=batch_size, 
-                                   num_workers=num_workers, 
-                                   train_ratio=train_ratio)
-    best_checkpoint_callback = ModelCheckpoint(monitor="val/score", mode="max", save_top_k=5, dirpath="checkpoints", every_n_train_steps=val_check_interval, filename="{val/score:.2f}-{epoch}")
-    epoch_checkpoint_callback = ModelCheckpoint(dirpath="checkpoints", save_on_train_epoch_end=True, filename="end-{epoch}")
+    tokenizer = SignalTokenizer(vocab)
+    dataset = SignalDataset(dataset_path, tokenizer)
+    train_size = int(train_ratio * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
+    logits_processor = SignalLogitsProcessor()
+    logits_processor_list = LogitsProcessorList([logits_processor])
+    compute_metrics = ComputeMetrics(logits_processor_list, tokenizer)
 
-    # Define a Trainer
-    trainer = L.Trainer(max_epochs=num_epochs,
-                        logger=logger,
-                        log_every_n_steps=4,
-                        val_check_interval=val_check_interval,
-                        callbacks=[
-                            best_checkpoint_callback,
-                            epoch_checkpoint_callback,
-                        ])
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=output_dir,
+        run_name=run_name,
+        learning_rate=learning_rate,
+        num_train_epochs=num_train_epochs,
+        per_device_train_batch_size=per_device_train_batch_size,
+        per_device_eval_batch_size=per_device_eval_batch_size,
+        weight_decay=weight_decay,
+        eval_strategy="steps",
+        eval_steps=eval_steps,
+        logging_dir=logging_dir,
+        logging_steps=logging_steps,
+        metric_for_best_model="score",
+        save_strategy="steps",
+        save_steps=save_steps,
+        report_to=report_to,
+    )
+    trainer = Seq2SeqTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        data_collator=_collator_fn,
+        compute_metrics=compute_metrics,
+    )
+    trainer.train()
 
-    # Train the model
-    print("Start training...")
-    trainer.fit(model, data_module, ckpt_path=ckpt_path)
-
-    # Finalize the logger
-    logger.finalize(status="success")
 
 if __name__ == "__main__":
     fire.Fire(train)
