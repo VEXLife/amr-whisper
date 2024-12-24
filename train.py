@@ -14,7 +14,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
           logging_steps=100, save_steps=1000, output_dir="./logs/whisper_iq",
           logging_dir="./logs/whisper_iq", run_name="whisper_finetune", report_to="tensorboard",
           dataset_path='./train_data', train_ratio=0.99, max_seq_len=2048,
-          resume_from_checkpoint=True):
+          save_total_limit=20, resume_from_checkpoint=True):
     """
     Trains a Whisper model for conditional generation on a given dataset.
 
@@ -76,6 +76,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         metric_for_best_model="score",
         save_strategy="steps",
         save_steps=save_steps,
+        save_total_limit=save_total_limit,
         report_to=report_to,
         resume_from_checkpoint=resume_from_checkpoint,
     )
