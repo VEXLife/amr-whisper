@@ -14,7 +14,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
           logging_steps=100, save_steps=1000, output_dir="./logs/whisper_iq",
           logging_dir="./logs/whisper_iq", run_name="whisper_finetune", report_to="tensorboard",
           dataset_path='./train_data', train_ratio=0.99, max_seq_len=2048,
-          save_total_limit=20, resume_from_checkpoint=True):
+          save_total_limit=20, resume_from_checkpoint=None, num_workers=4):
     """
     Trains a Whisper model for conditional generation on a given dataset.
 
@@ -34,21 +34,25 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         dataset_path (str, optional): Path to the training dataset. Defaults to './train_data'.
         train_ratio (float, optional): Ratio of the dataset to use for training. Defaults to 0.99.
         max_seq_len (int, optional): Maximum number of sequences. Defaults to 2048.
-        resume_from_checkpoint (bool, optional): Whether to resume training from a checkpoint. Defaults to True.
+        resume_from_checkpoint (str, bool, optional): Resume training from given checkpoint dir.
+        num_workers (int, optional): Number of workers for data loading. Defaults to 4.
         
     Returns:
         None
     """
-    model_config = WhisperConfig(
-        vocab_size=vocab_len,
-        num_mel_bins=2,
-        max_source_positions=max_seq_len // 2, # Divide by 2 because the second conv in Whisper has a stride of 2
-        pad_token_id=vocab["<|pad|>"],
-        bos_token_id=vocab["<|startoftranscript|>"],
-        eos_token_id=vocab["<|eos|>"],
-        decoder_start_token_id=vocab["<|startoftranscript|>"],
-    )
-    model = WhisperForConditionalGeneration(config=model_config)
+    if resume_from_checkpoint is not None:
+        model = WhisperForConditionalGeneration.from_pretrained(resume_from_checkpoint)
+    else:
+        model_config = WhisperConfig(
+            vocab_size=vocab_len,
+            num_mel_bins=2,
+            max_source_positions=max_seq_len // 2, # Divide by 2 because the second conv in Whisper has a stride of 2
+            pad_token_id=vocab["<|pad|>"],
+            bos_token_id=vocab["<|startoftranscript|>"],
+            eos_token_id=vocab["<|eos|>"],
+            decoder_start_token_id=vocab["<|startoftranscript|>"],
+        )
+        model = WhisperForConditionalGeneration(config=model_config)
 
     tokenizer = SignalTokenizer(vocab)
     feature_extractor = SignalFeatureExtractor(max_seq_len)
@@ -78,7 +82,8 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         save_steps=save_steps,
         save_total_limit=save_total_limit,
         report_to=report_to,
-        resume_from_checkpoint=resume_from_checkpoint,
+        dataloader_num_workers=num_workers,
+        dataloader_persistent_workers=True,
     )
     trainer = Seq2SeqTrainer(
         model=model,
@@ -88,7 +93,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         data_collator=collator_fn,
         compute_metrics=compute_metrics,
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
 
 if __name__ == "__main__":
