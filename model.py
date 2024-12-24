@@ -39,7 +39,7 @@ class SignalTokenizer:
             input_ids = input_ids[1:]
         symb_type = symb_type_dict_inv[vocab_inv[input_ids[0].item()]]
         symb_wid = float(vocab_inv[input_ids[1].item()][2:-2])
-        symb_seq = [input_id.item() - vocab['0'] for input_id in input_ids[2:]]
+        symb_seq = [input_id.item() - vocab['0'] for input_id in input_ids[2:-1]] # Filter out <|eos|>
         return symb_type, symb_wid, symb_seq
 
     def batch_decode(self, batch: torch.LongTensor | List[torch.LongTensor]) -> Tuple[torch.Tensor, torch.Tensor, list]:
