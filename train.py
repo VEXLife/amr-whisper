@@ -4,16 +4,17 @@ from transformers import (LogitsProcessorList, Seq2SeqTrainer,
                           Seq2SeqTrainingArguments, WhisperConfig,
                           WhisperForConditionalGeneration)
 
-from dataset import SignalDataset, _collator_fn
-from model import ComputeMetrics, SignalLogitsProcessor, SignalTokenizer
+from dataset import SignalDataset, collator_fn
+from model import ComputeMetrics, SignalLogitsProcessor, SignalTokenizer, SignalFeatureExtractor
 from vocab import vocab, vocab_inv, vocab_len
 
 
 def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=16,
           per_device_eval_batch_size=16, weight_decay=0.01, eval_steps=5000,
           logging_steps=100, save_steps=1000, output_dir="./logs/whisper_iq",
-          logging_dir="./logs/whisper_iq", run_name="whisper_finetune", report_to="wandb",
-          dataset_path='./train_data', train_ratio=0.99, max_source_positions=2048):
+          logging_dir="./logs/whisper_iq", run_name="whisper_finetune", report_to="tensorboard",
+          dataset_path='./train_data', train_ratio=0.99, max_seq_len=2048,
+          resume_from_checkpoint=True):
     """
     Trains a Whisper model for conditional generation on a given dataset.
 
@@ -32,7 +33,8 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         report_to (str, optional): Reporting tool for logging (e.g., "wandb"). Defaults to "wandb".
         dataset_path (str, optional): Path to the training dataset. Defaults to './train_data'.
         train_ratio (float, optional): Ratio of the dataset to use for training. Defaults to 0.99.
-        max_source_positions (int, optional): Maximum number of source positions. Defaults to 2048.
+        max_seq_len (int, optional): Maximum number of sequences. Defaults to 2048.
+        resume_from_checkpoint (bool, optional): Whether to resume training from a checkpoint. Defaults to True.
         
     Returns:
         None
@@ -40,7 +42,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
     model_config = WhisperConfig(
         vocab_size=vocab_len,
         num_mel_bins=2,
-        max_source_positions=max_source_positions,
+        max_source_positions=max_seq_len // 2, # Divide by 2 because the second conv in Whisper has a stride of 2
         pad_token_id=vocab["<|pad|>"],
         bos_token_id=vocab["<|startoftranscript|>"],
         eos_token_id=vocab["<|eos|>"],
@@ -49,7 +51,8 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
     model = WhisperForConditionalGeneration(config=model_config)
 
     tokenizer = SignalTokenizer(vocab)
-    dataset = SignalDataset(dataset_path, tokenizer)
+    feature_extractor = SignalFeatureExtractor(max_seq_len)
+    dataset = SignalDataset(dataset_path, feature_extractor, tokenizer)
     train_size = int(train_ratio * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
@@ -74,13 +77,14 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         save_strategy="steps",
         save_steps=save_steps,
         report_to=report_to,
+        resume_from_checkpoint=resume_from_checkpoint,
     )
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        data_collator=_collator_fn,
+        data_collator=collator_fn,
         compute_metrics=compute_metrics,
     )
     trainer.train()

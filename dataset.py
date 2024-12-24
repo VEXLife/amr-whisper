@@ -9,12 +9,13 @@ from torch.utils.data import Dataset
 
 
 class SignalDataset(Dataset):
-    def __init__(self, data_path, tokenizer):
+    def __init__(self, data_path, feature_extractor, tokenizer):
         super(SignalDataset, self).__init__()
         # Recursively find all csv files in the data_path
         self.file_list = glob.glob(os.path.join(
             data_path, '**/*.csv'), recursive=True)
         self.cache = {}  # Dictionary for caching data
+        self.feature_extractor = feature_extractor
         self.tokenizer = tokenizer
 
     def __len__(self):
@@ -32,12 +33,7 @@ class SignalDataset(Dataset):
         symb_type = data['Modulation Type'].values[0]
         symb_wid = data['Symbol Width'].values[0]
 
-        iq_wave = torch.tensor(iq_wave, dtype=torch.float32)
-        iq_wave = rearrange(iq_wave, 't c -> c t')
-        # Pad the features to 2048
-        iq_wave = torch.nn.functional.pad(
-            iq_wave, (0, 2048 - iq_wave.shape[1]), mode='constant', value=0)
-
+        iq_wave = self.feature_extractor(iq_wave)
         target = self.tokenizer.encode(symb_type, symb_wid, symb_seq)
         # Cache processed data
         self.cache[index] = (iq_wave, target)
@@ -45,7 +41,7 @@ class SignalDataset(Dataset):
         return iq_wave, target
 
 
-def _collator_fn(batch):
+def collator_fn(batch):
     input_features = rnn_utils([item[0] for item in batch], batch_first=True)
     labels = rnn_utils([item[1] for item in batch],
                        batch_first=True, padding_value=-100)
