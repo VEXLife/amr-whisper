@@ -1,7 +1,7 @@
 from einops import rearrange
 from vocab import vocab, vocab_inv
 import torch
-from typing import List, Tuple
+from typing import Iterable, Tuple
 import numpy as np
 from transformers import LogitsProcessor
 import torch.nn.functional as F
@@ -42,7 +42,7 @@ class SignalTokenizer:
         symb_seq = [input_id.item() - vocab['0'] for input_id in input_ids[2:-1]] # Filter out <|eos|>
         return symb_type, symb_wid, symb_seq
 
-    def batch_decode(self, batch: torch.LongTensor | List[torch.LongTensor]) -> Tuple[torch.Tensor, torch.Tensor, list]:
+    def batch_decode(self, batch: Iterable[torch.LongTensor]) -> Tuple[torch.Tensor, torch.Tensor, list]:
         symb_types = []
         symb_wids = []
         symb_seqs = []
