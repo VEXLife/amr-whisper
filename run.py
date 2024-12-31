@@ -2,9 +2,9 @@
 import os
 import sys
 import torch
-from transformers import WhisperForConditionalGeneration
+from transformers import WhisperForConditionalGeneration, LogitsProcessorList
 from dataset import SignalDataset, CustomSignalDataset
-from model import SignalTokenizer, SignalFeatureExtractor
+from model import SignalTokenizer, SignalFeatureExtractor, SignalLogitsProcessor
 from vocab import vocab
     
 
@@ -27,11 +27,14 @@ def main(to_pred_dir, result_save_path):
     # 初始化 Tokenizer 和 Dataset
     tokenizer = SignalTokenizer(vocab)
     dataset = CustomSignalDataset(testpath, SignalFeatureExtractor(2048), tokenizer)
+    
+    logits_processor = SignalLogitsProcessor()
+    logits_processor_list = LogitsProcessorList([logits_processor])
 
     # 遍历测试集文件，生成预测结果
     for idx, file_name in enumerate(test_file_lst):
         iq_wave = dataset[idx][0].unsqueeze(0)  # 添加 batch 维度
-        tk = model.generate(iq_wave, max_length=2000, num_beams=5, early_stopping=True)  # 推理
+        tk = model.generate(iq_wave, max_length=448, logits_processor=logits_processor_list)  # 推理
         s = tokenizer.batch_decode(tk)
         modulation_type = int(s[0][0].item())
         symbol_width_tensor = s[1][0]
