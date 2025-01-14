@@ -39,7 +39,8 @@ class SignalTokenizer:
             input_ids = input_ids[1:]
         symb_type = symb_type_dict_inv[vocab_inv[input_ids[0].item()]]
         symb_wid = float(vocab_inv[input_ids[1].item()][2:-2])
-        symb_seq = [input_id.item() - vocab['0'] for input_id in input_ids[2:-1]] # Filter out <|eos|>
+        symb_seq = [input_id.item() - vocab['0']
+                    for input_id in input_ids[2:-1]]  # Filter out <|eos|>
         return symb_type, symb_wid, symb_seq
 
     def batch_decode(self, batch: Iterable[torch.LongTensor]) -> Tuple[torch.Tensor, torch.Tensor, list]:
@@ -80,9 +81,9 @@ class SignalLogitsProcessor(LogitsProcessor):
     def __call__(self, input_ids, scores):
         # The 1st token is the modulation type, the 2nd token is the symbol width, and the rest are the symbol sequence
         new_scores = torch.full_like(scores, -float('inf'))
-        if input_ids.numel() == 1:
+        if input_ids.size(1) == 1:
             new_scores[:, self.symb_type_mask] = scores[:, self.symb_type_mask]
-        elif input_ids.numel() == 2:
+        elif input_ids.size(1) == 2:
             new_scores[:, self.symb_wid_mask] = scores[:, self.symb_wid_mask]
         else:
             new_scores[:, self.symb_seq_mask] = scores[:, self.symb_seq_mask]

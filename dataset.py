@@ -51,13 +51,20 @@ def collator_fn(batch):
     }
 
 
-class CustomSignalDataset(SignalDataset): #用于infer的时候读取文件
-    """
-    自定义 SignalDataset，忽略不存在的列，只处理 I 和 Q。
-    """
+class CustomSignalDataset(SignalDataset):
+    def __init__(self, testpath, feature_extractor, tokenizer):
+        # 初始化 file_list
+        self.file_list = [os.path.join(testpath, file) for file in os.listdir(testpath) if file.endswith('.csv')]
+        self.feature_extractor = feature_extractor  # 初始化 feature_extractor
+        self.tokenizer = tokenizer  # 保存 tokenizer
+        print(f"Dataset contains {len(self.file_list)} files.")  # 打印文件数量
+
+    def __len__(self):
+        return len(self.file_list)  # 返回文件列表的长度
+
     def __getitem__(self, index):
         file_path = self.file_list[index]
         data = pd.read_csv(file_path, header=None, names=['I', 'Q'])  # 仅加载 I 和 Q 列
         iq_wave = data[['I', 'Q']].values
         iq_wave = self.feature_extractor(iq_wave)  # 提取特征
-        return iq_wave, None  # 返回 iq_wave，忽略目标值
+        return iq_wave, None  # 返回 iq_wave 和 None 作为标签
