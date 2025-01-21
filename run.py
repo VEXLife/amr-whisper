@@ -1,4 +1,5 @@
 # 运行输入python run.py ./test_data ./result.csv
+import json
 import os 
 import sys
 import torch
@@ -27,6 +28,26 @@ def collator_fn(batch):
         "labels": labels,
     }
 
+
+def update_config_file(file_path, suppress_tokens, ckpt_dir):
+    """更新配置文件中的 begin_suppress_tokens 字段"""
+    # 使用 ckpt_dir 来构建绝对路径
+    absolute_path = os.path.join(ckpt_dir, file_path)
+    with open(absolute_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+
+    # 读取并保存原始值
+    original_value = config.get("begin_suppress_tokens", None)
+
+    # 修改 begin_suppress_tokens 字段
+    config["begin_suppress_tokens"] = suppress_tokens
+
+    # 将修改后的内容写回文件
+    with open(absolute_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+
+    return original_value
+
 def main(to_pred_dir, result_save_path):
     """
     主函数，用于执行脚本的主要逻辑。
@@ -35,6 +56,13 @@ def main(to_pred_dir, result_save_path):
         to_pred_dir: 测试集文件夹上层目录路径，不可更改！
         result_save_path: 预测结果文件保存路径，官方已指定为csv格式，不可更改！
     """
+
+    ckpt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whisperiq.ckpt")
+    # 更新 config.json 和 generation_config.json 文件中的 begin_suppress_tokens 字段为 [1, 1]
+    original_config_value = update_config_file("config.json", [1, 1], ckpt_dir)
+    original_generation_value = update_config_file("generation_config.json", [1, 1], ckpt_dir)
+
+
     testpath = os.path.join(os.path.abspath(to_pred_dir), 'test')  # 不可更改！
     test_file_lst = [name for name in os.listdir(testpath) if name.endswith('.csv')]  # 不可更改！
     result = ['file_name,modulation_type,symbol_width,code_sequence']  # 不可更改！
@@ -42,7 +70,7 @@ def main(to_pred_dir, result_save_path):
     # 检查设备加载模型
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    model = WhisperForConditionalGeneration.from_pretrained("./whisperiq.ckpt").to(device)
+    model = WhisperForConditionalGeneration.from_pretrained(ckpt_dir).to(device)
     model.eval()
     # 初始化 Tokenizer 和 logits_processor 和 dataset
     tokenizer = SignalTokenizer(vocab)
@@ -97,6 +125,11 @@ def main(to_pred_dir, result_save_path):
     # 将预测结果保存到 result_save_path
     with open(result_save_path, 'w') as f:
         f.write('\n'.join(result))
+
+    
+    # 运行完毕后恢复原配置文件
+    update_config_file("config.json", original_config_value, ckpt_dir)
+    update_config_file("generation_config.json", original_generation_value, ckpt_dir)
 
 
 if __name__ == "__main__":
