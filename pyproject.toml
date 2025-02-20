@@ -18,5 +18,9 @@ train = [
     "fire>=0.7.0",
     "tensorboard>=2.18.0; python_version >= '3.9'",
     "accelerate>=1.1.0; python_version >= '3.9'",
+    "flash-attn>=2",
     "ipykernel",
 ]
+
+[tool.uv]
+no-build-isolation-package = ['flash-attn']
