@@ -9,6 +9,7 @@ dependencies = [
     "lightning>=2",
     "matplotlib>=3",
     "pandas>=2",
+    "pytest>=8.3.4",
     "torch>=2.1",
     "transformers>=4.1.0",
 ]
