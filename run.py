@@ -117,6 +117,7 @@ def main(to_pred_dir, result_save_path):
             symbol_width_tensor = float(s[1][i])  # 如果需要格式化为浮点数
             symbol_width = f"{symbol_width_tensor:.2f}"  # 格式化符号宽度
             code_sequence = s[2][i]  # 假设是一个可迭代的序列
+            code_sequence = [x for x in code_sequence if x >= 0]
             code_sequence_str = ' '.join(map(str, code_sequence))  # 将符号序列转换为字符串
             # 将结果添加到列表中
             result.append(f"{file_name},{modulation_type},{symbol_width},{code_sequence_str}")
