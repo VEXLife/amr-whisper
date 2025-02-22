@@ -68,7 +68,7 @@ class SignalFeatureExtractor:
         iq_wave = rearrange(iq_wave, 't c -> c t')
         iq_wave_complex = torch.complex(iq_wave[0], iq_wave[1])
         spec = torch.stft(iq_wave_complex, win_length=128, n_fft=128, hop_length=32, window=torch.hann_window(128), return_complex=True)
-        iq_spec = torch.abs(spec) 
+        iq_spec = torch.cat((spec.real, spec.imag), dim=0)
         # Pad the features
         iq_spec = torch.nn.functional.pad(
             iq_spec, (0, self.max_seq_len - iq_spec.shape[1]), mode='constant', value=0)
