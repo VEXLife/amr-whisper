@@ -66,10 +66,13 @@ class SignalFeatureExtractor:
     def __call__(self, iq_wave):
         iq_wave = torch.tensor(iq_wave, dtype=torch.float32)
         iq_wave = rearrange(iq_wave, 't c -> c t')
+        iq_wave_complex = torch.complex(iq_wave[0], iq_wave[1])
+        spec = torch.stft(iq_wave_complex, win_length=128, n_fft=128, hop_length=32, window=torch.hann_window(128), return_complex=True)
+        iq_spec = torch.abs(spec) 
         # Pad the features
-        iq_wave = torch.nn.functional.pad(
-            iq_wave, (0, self.max_seq_len - iq_wave.shape[1]), mode='constant', value=0)
-        return iq_wave
+        iq_spec = torch.nn.functional.pad(
+            iq_spec, (0, self.max_seq_len - iq_spec.shape[1]), mode='constant', value=0)
+        return iq_spec
 
 
 class SignalLogitsProcessor(LogitsProcessor):

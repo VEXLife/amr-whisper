@@ -57,7 +57,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
     else:
         model_config = WhisperConfig(
             vocab_size=vocab_len,
-            num_mel_bins=2,
+            num_mel_bins=64,
             max_source_positions=max_seq_len // 2, # Divide by 2 because the second conv in Whisper has a stride of 2
             pad_token_id=vocab["<|pad|>"],
             bos_token_id=vocab["<|startoftranscript|>"],
