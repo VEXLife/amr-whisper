@@ -76,7 +76,7 @@ def main(to_pred_dir, result_save_path):
     tokenizer = SignalTokenizer(vocab)
     logits_processor = SignalLogitsProcessor()
     logits_processor_list = LogitsProcessorList([logits_processor])
-    dataset = CustomSignalDataset(testpath, SignalFeatureExtractor(2048), tokenizer)
+    dataset = CustomSignalDataset(testpath, SignalFeatureExtractor(512), tokenizer)
 
     # 定义批量大小
     batch_size = 16  # 可以根据GPU显存调整，例如8或32
