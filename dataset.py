@@ -14,7 +14,6 @@ class SignalDataset(Dataset):
         # Recursively find all csv files in the data_path
         self.file_list = glob.glob(os.path.join(
             data_path, '**/*.csv'), recursive=True)
-        self.cache = {}  # Dictionary for caching data
         self.feature_extractor = feature_extractor
         self.tokenizer = tokenizer
 
@@ -22,9 +21,6 @@ class SignalDataset(Dataset):
         return len(self.file_list)
 
     def __getitem__(self, index):
-        if index in self.cache:
-            return self.cache[index]
-
         data = pd.read_csv(self.file_list[index], header=None, names=[
                            'I', 'Q', 'Code Sequence', 'Modulation Type', 'Symbol Width'])
 
@@ -35,8 +31,6 @@ class SignalDataset(Dataset):
 
         iq_wave = self.feature_extractor(iq_wave)
         target = self.tokenizer.encode(symb_type, symb_wid, symb_seq)
-        # Cache processed data
-        self.cache[index] = (iq_wave, target)
 
         return iq_wave, target
 

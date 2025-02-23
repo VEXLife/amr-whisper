@@ -121,8 +121,8 @@ class ComputeMetrics:
 
         score = 0
         for i in range(batch_size):
-            if label_symb_type[i] == symb_type_dict_inv["<|unknownmod|>"]:
-                if pred_symb_type[i] == symb_type_dict_inv["<|unknownmod|>"]:
+            if label_symb_type[i] == symb_type_dict_inv["<|unknownmod|>"] or pred_symb_type[i] == symb_type_dict_inv["<|unknownmod|>"]:
+                if pred_symb_type[i] == label_symb_type[i]:
                     score += 100 / batch_size
                 continue
 
