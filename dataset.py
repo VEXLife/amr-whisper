@@ -29,18 +29,20 @@ class SignalDataset(Dataset):
         symb_type = data['Modulation Type'].values[0]
         symb_wid = data['Symbol Width'].values[0]
 
-        iq_wave = self.feature_extractor(iq_wave)
+        iq_wave, iq_wave_len = self.feature_extractor(iq_wave)
         target = self.tokenizer.encode(symb_type, symb_wid, symb_seq)
 
-        return iq_wave, target
+        return iq_wave, iq_wave_len, target
 
 
 def collator_fn(batch):
     input_features = rnn_utils([item[0] for item in batch], batch_first=True)
-    labels = rnn_utils([item[1] for item in batch],
+    input_lengths = torch.concat([item[1] for item in batch])
+    labels = rnn_utils([item[2] for item in batch],
                        batch_first=True, padding_value=-100)
     return {
         "input_features": input_features,
+        "input_lengths": input_lengths,
         "labels": labels,
     }
 
