@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel
+from transformers.modeling_outputs import Seq2SeqLMOutput
 from typing import Optional
 import math
 
@@ -11,8 +12,8 @@ class AEDConfig(PretrainedConfig):
     model_type = "Conformer-Transformer"
 
     def __init__(self,
-                 mel_bins,
-                 vocab_size,
+                 mel_bins = 64,
+                 vocab_size = 69,
                  d_model=256,
                  encoder_layers=6,
                  decoder_layers=6,
@@ -71,32 +72,68 @@ class AED(PreTrainedModel):
         self.eos = config.eos
 
     def forward(
-        self, 
-        inputs: torch.Tensor,
-        input_lengths: torch.Tensor,
-        targets: torch.Tensor,
-        target_lengths: torch.Tensor
-    ) -> torch.Tensor:
-        # Encoder processing
-        encoder_outputs, encoder_mask = self.encoder(inputs, input_lengths)
-      
-        # Convert target indices to embeddings
-        tgt = self.embedding(targets)
-        tgt = self.pos_encoder(tgt)
-      
-        # Create masks
-        tgt_mask = self.generate_square_subsequent_mask(tgt.size(1)).to(targets.device)
-        tgt_key_padding_mask = self.create_padding_mask(targets, target_lengths)
-      
-        # Decoder processing
-        decoder_output = self.decoder(
-            tgt=tgt,
+            self,
+            input_features: torch.Tensor,
+            input_lengths: torch.Tensor,
+            decoder_input_ids: Optional[torch.Tensor] = None,
+            labels: Optional[torch.Tensor] = None
+    ) -> Seq2SeqLMOutput:
+        # Encode input features
+        encoder_outputs, encoder_mask = self.encoder(input_features, input_lengths)
+
+        encoder_mask = encoder_mask.squeeze(1) if encoder_mask.dim() == 3 else encoder_mask
+        encoder_key_padding_mask = encoder_mask.bool()
+        
+        # 如果提供了 labels，则使用 teacher forcing 构造 decoder 输入
+        if decoder_input_ids is None and labels is not None:
+            # 在每个序列首部添加 SOS，去掉最后一位，用作 decoder 输入
+            decoder_input = torch.cat(
+                [torch.full((labels.size(0), 1), self.sos, dtype=torch.long, device=labels.device),
+                labels[:, :-1]],
+                dim=1
+            )
+            # Replace -100 with self.pad
+            decoder_input = torch.where(decoder_input == -100, torch.full_like(decoder_input, self.pad), decoder_input)
+            labels = torch.where(labels == -100, torch.full_like(labels, self.eos), labels)
+        else:
+            decoder_input = decoder_input_ids if decoder_input_ids is not None else torch.full(
+                (input_features.size(0), 1), self.sos, dtype=torch.long, device=input_features.device
+            )
+
+        # Embed and add positional encoding
+        embedded = self.embedding(decoder_input)
+        embedded = self.pos_encoder(embedded)
+
+        # Target mask
+        tgt_mask = self.generate_square_subsequent_mask(decoder_input.size(1)).to(decoder_input.device)
+
+        # Decode step
+        output = self.decoder(
+            tgt=embedded,
             memory=encoder_outputs,
             tgt_mask=tgt_mask,
-            memory_key_padding_mask=encoder_mask.unsqueeze(1).bool(),  # Adjust mask shape
+            memory_key_padding_mask=encoder_key_padding_mask,
         )
-      
-        return self.proj(decoder_output)
+
+        # Get logits
+        logits = self.proj(output)
+
+        # Compute loss
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=self.pad)
+
+        return Seq2SeqLMOutput(
+            loss=loss,
+            logits=logits,
+            past_key_values=None,
+            decoder_hidden_states=None,
+            decoder_attentions=None,
+            cross_attentions=None,
+            encoder_last_hidden_state=None,
+            encoder_hidden_states=None,
+            encoder_attentions=None,
+        )
     
     def generate(
             self, 
@@ -109,8 +146,7 @@ class AED(PreTrainedModel):
     
         # Encode input features
         encoder_outputs, encoder_mask = self.encoder(input_features, input_lengths)
-    
-        # 修复1：正确转换mask维度 [batch, seq_len]
+
         encoder_mask = encoder_mask.squeeze(1) if encoder_mask.dim() == 3 else encoder_mask
         encoder_key_padding_mask = encoder_mask.bool()  # [batch, seq_len]
     

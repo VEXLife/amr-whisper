@@ -73,7 +73,7 @@ class SignalFeatureExtractor:
         # Pad the features
         iq_spec = torch.nn.functional.pad(
             iq_spec, (0,0,0,self.max_seq_len - original_len), mode='constant', value=0)
-        return iq_spec, torch.tensor(original_len, dtype=torch.long)
+        return iq_spec, torch.tensor([original_len], dtype=torch.long)
 
 
 class SignalLogitsProcessor(LogitsProcessor):
