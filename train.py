@@ -16,7 +16,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
           dataset_path='./train_data', train_ratio=0.99, max_seq_len=2048,
           encoder_attention_heads=6, encoder_ffn_dim=1536, encoder_layers=4,
           decoder_attention_heads=6, decoder_ffn_dim=1536, decoder_layers=4,
-          attn_implementation="flash_attention_2",
+          d_model=384, attn_implementation="flash_attention_2",
           save_total_limit=20, resume_from_checkpoint=None, num_workers=4):
     """
     Trains a Whisper model for conditional generation on a given dataset.
@@ -43,6 +43,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         decoder_attention_heads (int, optional): Number of attention heads in the decoder. Defaults to 6.
         decoder_ffn_dim (int, optional): Hidden layer size in the decoder. Defaults to 1536.
         decoder_layers (int, optional): Number of layers in the decoder. Defaults to 4.
+        d_model (int, optional): Hidden dimension of the model. Defaults to 384.
         attn_implementation (str, optional): Attention implementation to use. Can be 'eager', 'sdpa' or 'flash_attention_2'. Defaults to "flash_attention_2".
         save_total_limit (int, optional): Maximum number of checkpoints to keep. Defaults to 20.
         resume_from_checkpoint (str, bool, optional): Resume training from given checkpoint dir.
@@ -69,6 +70,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
             decoder_attention_heads=decoder_attention_heads,
             decoder_ffn_dim=decoder_ffn_dim,
             decoder_layers=decoder_layers,
+            d_model=d_model,
             attn_implementation=attn_implementation,
         )
         model = WhisperForConditionalGeneration(config=model_config)
