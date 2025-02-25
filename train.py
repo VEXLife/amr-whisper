@@ -101,7 +101,7 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         save_total_limit=save_total_limit,
         report_to=report_to,
         dataloader_num_workers=num_workers,
-        dataloader_persistent_workers=True,
+        dataloader_persistent_workers=False,
     )
     trainer = Seq2SeqTrainer(
         model=model,
