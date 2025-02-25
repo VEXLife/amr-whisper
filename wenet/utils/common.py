@@ -362,13 +362,6 @@ def is_torch_npu_available() -> bool:
         check if torch_npu is available.
         torch_npu is a npu adapter of PyTorch
     '''
-    try:
-        import torch_npu  # noqa
-        return True
-    except ImportError:
-        if not torch.cuda.is_available():
-            print("Module \"torch_npu\" not found. \"pip install torch_npu\" \
-                if you are using Ascend NPU, otherwise, ignore it")
     return False
 
 

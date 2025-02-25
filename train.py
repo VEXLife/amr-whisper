@@ -1,8 +1,8 @@
 import fire
 from torch.utils.data import random_split
 from transformers import (LogitsProcessorList, Seq2SeqTrainer,
-                          Seq2SeqTrainingArguments, WhisperConfig,
-                          WhisperForConditionalGeneration)
+                          Seq2SeqTrainingArguments)
+from modeling_aed import AED, AEDConfig
 
 from dataset import SignalDataset, collator_fn
 from model import ComputeMetrics, SignalLogitsProcessor, SignalTokenizer, SignalFeatureExtractor
@@ -11,15 +11,15 @@ from vocab import vocab, vocab_inv, vocab_len
 
 def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=16,
           per_device_eval_batch_size=16, weight_decay=0.01, eval_steps=5000,
-          logging_steps=100, save_steps=1000, output_dir="./logs/whisper_iq",
-          logging_dir="./logs/whisper_iq", run_name="whisper_finetune", report_to="tensorboard",
+          logging_steps=100, save_steps=1000, output_dir="./logs/aed_iq",
+          logging_dir="./logs/aed_iq", run_name="aed_finetune", report_to="tensorboard",
           dataset_path='./train_data', train_ratio=0.99, max_seq_len=2048,
           encoder_attention_heads=6, encoder_ffn_dim=1536, encoder_layers=4,
           decoder_attention_heads=6, decoder_ffn_dim=1536, decoder_layers=4,
-          d_model=384, attn_implementation="flash_attention_2",
+          d_model=384,
           save_total_limit=20, resume_from_checkpoint=None, num_workers=4):
     """
-    Trains a Whisper model for conditional generation on a given dataset.
+    Trains an AED model for conditional generation on a given dataset.
 
     Args:
         learning_rate (float, optional): The learning rate for training. Defaults to 1e-4.
@@ -30,9 +30,9 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         eval_steps (int, optional): Number of steps between evaluations. Defaults to 5000.
         logging_steps (int, optional): Number of steps between logging. Defaults to 100.
         save_steps (int, optional): Number of steps between model checkpoints. Defaults to 1000.
-        output_dir (str, optional): Directory to save model checkpoints. Defaults to "./logs/whisper_iq".
-        logging_dir (str, optional): Directory to save logs. Defaults to "./logs/whisper_iq".
-        run_name (str, optional): Name of the training run. Defaults to "whisper_finetune".
+        output_dir (str, optional): Directory to save model checkpoints. Defaults to "./logs/aed_iq".
+        logging_dir (str, optional): Directory to save logs. Defaults to "./logs/aed_iq".
+        run_name (str, optional): Name of the training run. Defaults to "aed_finetune".
         report_to (str, optional): Reporting tool for logging (e.g., "tensorboard"). Defaults to "tensorboard".
         dataset_path (str, optional): Path to the training dataset. Defaults to './train_data'.
         train_ratio (float, optional): Ratio of the dataset to use for training. Defaults to 0.99.
@@ -44,7 +44,6 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         decoder_ffn_dim (int, optional): Hidden layer size in the decoder. Defaults to 1536.
         decoder_layers (int, optional): Number of layers in the decoder. Defaults to 4.
         d_model (int, optional): Hidden dimension of the model. Defaults to 384.
-        attn_implementation (str, optional): Attention implementation to use. Can be 'eager', 'sdpa' or 'flash_attention_2'. Defaults to "flash_attention_2".
         save_total_limit (int, optional): Maximum number of checkpoints to keep. Defaults to 20.
         resume_from_checkpoint (str, bool, optional): Resume training from given checkpoint dir.
         num_workers (int, optional): Number of workers for data loading. Defaults to 4.
@@ -53,27 +52,25 @@ def train(learning_rate=1e-4, num_train_epochs=20, per_device_train_batch_size=1
         None
     """
     if resume_from_checkpoint is not None:
-        model = WhisperForConditionalGeneration.from_pretrained(resume_from_checkpoint,
-            attn_implementation=attn_implementation)
+        model = AED.from_pretrained(resume_from_checkpoint)
     else:
-        model_config = WhisperConfig(
+        model_config = AEDConfig(
             vocab_size=vocab_len,
-            num_mel_bins=64,
-            max_source_positions=max_seq_len // 2, # Divide by 2 because the second conv in Whisper has a stride of 2
-            pad_token_id=vocab["<|pad|>"],
-            bos_token_id=vocab["<|startoftranscript|>"],
-            eos_token_id=vocab["<|eos|>"],
+            mel_bins=64,
+            max_seq_len=max_seq_len,
+            pad=vocab["<|pad|>"],
+            sos=vocab["<|startoftranscript|>"],
+            eos=vocab["<|eos|>"],
             decoder_start_token_id=vocab["<|startoftranscript|>"],
-            encoder_attention_heads=encoder_attention_heads,
+            encoder_head=encoder_attention_heads,
             encoder_ffn_dim=encoder_ffn_dim,
             encoder_layers=encoder_layers,
-            decoder_attention_heads=decoder_attention_heads,
+            decoder_head=decoder_attention_heads,
             decoder_ffn_dim=decoder_ffn_dim,
             decoder_layers=decoder_layers,
             d_model=d_model,
-            attn_implementation=attn_implementation,
         )
-        model = WhisperForConditionalGeneration(config=model_config)
+        model = AED(model_config)
 
     tokenizer = SignalTokenizer(vocab)
     feature_extractor = SignalFeatureExtractor(max_seq_len)

@@ -104,7 +104,7 @@ class ComputeMetrics:
         self.tokenizer = tokenizer
 
     def __call__(self, pred):
-        pred_logits = torch.tensor(pred.predictions[0])
+        pred_logits = torch.tensor(pred.predictions)
         pred_ids = []
         for i in range(pred_logits.shape[0]):
             pred_seq_ids = [vocab["<|startoftranscript|>"]]

@@ -3,7 +3,7 @@ from torch.nn.modules.transformer import TransformerDecoder, TransformerDecoderL
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import PretrainedConfig, PreTrainedModel
+from transformers import PretrainedConfig, PreTrainedModel, LogitsProcessorList
 from transformers.modeling_outputs import Seq2SeqLMOutput
 from typing import Optional
 import math
@@ -81,20 +81,17 @@ class AED(PreTrainedModel):
         # Encode input features
         encoder_outputs, encoder_mask = self.encoder(input_features, input_lengths)
 
-        encoder_mask = encoder_mask.squeeze(1) if encoder_mask.dim() == 3 else encoder_mask
+        encoder_mask = encoder_mask.squeeze(1)
         encoder_key_padding_mask = encoder_mask.bool()
         
-        # 如果提供了 labels，则使用 teacher forcing 构造 decoder 输入
         if decoder_input_ids is None and labels is not None:
-            # 在每个序列首部添加 SOS，去掉最后一位，用作 decoder 输入
+            # Shift right to get the labels for the next time step
+            labels = torch.where(labels == -100, torch.full_like(labels, self.pad), labels)
             decoder_input = torch.cat(
                 [torch.full((labels.size(0), 1), self.sos, dtype=torch.long, device=labels.device),
                 labels[:, :-1]],
                 dim=1
             )
-            # Replace -100 with self.pad
-            decoder_input = torch.where(decoder_input == -100, torch.full_like(decoder_input, self.pad), decoder_input)
-            labels = torch.where(labels == -100, torch.full_like(labels, self.eos), labels)
         else:
             decoder_input = decoder_input_ids if decoder_input_ids is not None else torch.full(
                 (input_features.size(0), 1), self.sos, dtype=torch.long, device=input_features.device
@@ -139,7 +136,8 @@ class AED(PreTrainedModel):
             self, 
             input_features: torch.Tensor,
             input_lengths: torch.Tensor,
-            max_length: Optional[int] = None
+            max_length: Optional[int] = None,
+            logits_processor_list: Optional[LogitsProcessorList] = None,
         ) -> torch.Tensor:
         max_length = max_length or self.max_seq_len
         batch_size = input_features.size(0)
@@ -171,6 +169,8 @@ class AED(PreTrainedModel):
         
             # Get next token
             logits = self.proj(output[:, -1, :])
+            if logits_processor_list is not None:
+                logits = logits_processor_list(logits)
             next_token = torch.argmax(logits, dim=-1, keepdim=True)
         
             if (next_token == self.eos).all():
